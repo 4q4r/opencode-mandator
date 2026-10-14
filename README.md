@@ -100,14 +100,28 @@ opencode-mandator/
 
 | :-- | Command | Effect |
 | :-- | :-- | :-- |
-| :-- | `./install.sh` | Tries **symlink** (single source of truth: the repo file IS the live plugin), probes the loader via `opencode plugin list`, falls back to an **atomic copy** if the loader refuses the symlink. |
+| :-- | `./install.sh` | Tries **symlink** (single source of truth: the repo file IS the live plugin), probes the loader via `opencode plugin list` (3 attempts, 2s apart), falls back to an **atomic copy** if the loader refuses the symlink. |
 | :-- | `./install.sh --copy` | Skips the symlink attempt; installs a byte-copy. |
 | :-- | `./install.sh verify` | Reports installed mode + byte-parity vs `src/` + loader registration. Non-zero exit on drift. |
 | :-- | `./install.sh uninstall` | Removes the live file (documented unlock; the gate is fail-open while the file is absent). |
 
-**Live probe verdict (this machine, OpenCode v2.0.27):** recorded after the first
-`./install.sh` run — see the note printed by the installer; `verify` reports the
-current mode at any time.
+**Live probe verdict (this machine, OpenCode v2.0.27): SYMLINK MODE WORKS.**
+`opencode plugin list` registers `dispatch-policy` through a symlinked plugin file, so
+the default install is a symlink to `src/dispatch-policy.ts` — the repo is the single
+source of truth. History of the probe: the first installer revision probed exactly once,
+immediately after each atomic `mv`, and both probes failed (symlink AND the copy
+fallback) — yet a manual `opencode plugin list` seconds later registered the plugin.
+Root cause: probe race, not symlink rejection. After adding the retry loop, the symlink
+probe passes deterministically. `install.sh` still keeps the automatic copy fallback
+for machines whose loader behaves differently.
+
+**Hot-reload nuance (observed live 2026-10-14):** installing by atomic *rename*
+(`mv -Tf` replacing the path) did **not** trip the running server's plugin watcher —
+the running server kept its previously loaded module and per-session gate state
+(gated calls kept passing with pre-install compliance). Fresh `opencode` processes
+(f.e. `plugin list`) load the new file immediately. In-place content edits of the
+plugin file are the known hot-reload trigger (and wipe per-session gate state —
+fail-closed by design).
 
 ## 🔒 Security notes
 

@@ -32,9 +32,19 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 log() { echo "[opencode-mandator] $*"; }
 
 # Loader probe: does a fresh opencode process see (and load) the plugin?
+# Retried: a probe run immediately after the atomic mv can race the CLI's own
+# startup/plugin scan (observed live 2026-10-14: both probes failed yet the very
+# next `opencode plugin list` registered the plugin). 3 attempts, 2s apart.
 loader_sees_plugin() {
   command -v "$OPENCODE_BIN" >/dev/null 2>&1 || return 2   # 2 = cannot check
-  "$OPENCODE_BIN" plugin list 2>/dev/null | grep -q "dispatch-policy"
+  local attempt
+  for attempt in 1 2 3; do
+    if "$OPENCODE_BIN" plugin list 2>/dev/null | grep -q "dispatch-policy"; then
+      return 0
+    fi
+    [[ $attempt -lt 3 ]] && sleep 2
+  done
+  return 1
 }
 
 # Atomic install of MODE (symlink|copy): temp entry in the plugin dir, then one mv.
