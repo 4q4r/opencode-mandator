@@ -127,20 +127,26 @@ Root cause: probe race, not symlink rejection. After adding the retry loop, the 
 probe passes deterministically. `install.sh` still keeps the automatic copy fallback
 for machines whose loader behaves differently.
 
-**Hot-reload nuance (observed live 2026-10-14):** installing by atomic *rename*
-(`mv -Tf` replacing the path) did **not** trip the running server's plugin watcher —
-the running server kept its previously loaded module and per-session gate state
-(gated calls kept passing with pre-install compliance). Fresh `opencode` processes
-(f.e. `plugin list`) load the new file immediately. In-place content edits of the
-plugin file are the known hot-reload trigger (and wipe per-session gate state —
-fail-closed by design).
+**Hot-reload nuance (updated live 2026-10-24, supersedes the 2026-10-14 note):** in **symlink
+mode the running server does NOT hot-reload the plugin at all.** Verified live: atomic rename
+onto the path, byte-identical in-place rewrites, and real byte changes to the repo target all
+failed to apply — a dispatch that the new code must deny kept passing, and the log showed only
+`loading plugin` re-registrations (per session attach) with the ES module cached by URL from
+process start. The watcher does subscribe to the plugin path, but no reload event fires for a
+symlinked target. Fresh processes (`opencode plugin list`, new sessions) load the current file
+immediately. **Applying a plugin update to the running server = restart the server** (fail-closed:
+all sessions re-gate afterwards). The 2026-10-14 "in-place edits are the hot-reload trigger"
+observation predates symlink mode and described copy-mode installs. Verify a live update with a
+behavioral probe (a dispatch the new version must deny), never with log lines.
 
 ## 🔒 Security notes
 
-- **Atomic writes or nothing.** OpenCode hot-reloads plugin files on change; a broken
+- **Atomic writes or nothing.** In copy mode OpenCode hot-reloads plugin files on change; a broken
   interim file at the live path fail-closes **every** gated call with no in-session
   recovery (all writers are gated). `install.sh` materializes a temp entry in the same
   directory and installs with one `mv -Tf` — never edit the live file in place.
+  In symlink mode the running server does not hot-reload at all (see the hot-reload
+  nuance below) — a broken repo file still breaks every fresh process.
 - **Kill switch.** `OPENCODE_ENFORCE_OFF=1` disables all plugin behavior — but it is
   read from the server process env at hook-call time, so it only affects **future**
   server starts. The immediate off-switch is removing the file (hot-reload unloads it).
