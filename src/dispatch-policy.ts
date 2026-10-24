@@ -50,12 +50,13 @@ import path from "node:path"
 //      actionable deny instead of the generic runtime schema error; the "general" ban
 //      still wins for agent === "general".
 //  12. Identical-dispatch circuit breaker (ext 6.4): a fresh dispatch identical to an
-//      earlier one in the same session (djb2 over agent + NUL + prompt, per-session
-//      counter) is DENIED when the count reaches 4 — 3 identical executions pass, the
-//      4th is denied. Runs LAST on the fresh path (after the structure and
-//      memory-mandate checks, so compliance-teaching denies keep precedence). The deny
-//      deliberately carries NO compliance trailer and NO re-run instruction: re-running
-//      is exactly what is being denied.
+//      earlier one in the same session (djb2 digest as BUCKET INDEX over agent + NUL +
+//      prompt, exact (agent, prompt) comparison inside each bucket — fix round 1,
+//      32-bit collisions are real; per-session counters) is DENIED when the count
+//      reaches 4 — 3 identical executions pass, the 4th is denied. Runs LAST on the
+//      fresh path (after the structure and memory-mandate checks, so compliance-teaching
+//      denies keep precedence). The deny deliberately carries NO compliance trailer and
+//      NO re-run instruction: re-running is exactly what is being denied.
 //
 // Safety valves:
 //   - OPENCODE_ENFORCE_OFF=1 disables all plugin behavior (checked per hook call).
@@ -267,12 +268,18 @@ export const _testStat = {
 const loadedSkills = new Map<string, Set<string>>()
 const readTargets = new Map<string, Set<string>>()
 
-// ext 6.4: per-session identical-dispatch counter — Map<parentSessionID, Map<hash, count>>.
-// Sits beside the gate Maps at module scope with the same fail-closed restart/hot-reload
-// semantics (cleared when the process restarts or the plugin reloads). Fresh dispatches
-// only: continuations (input.sessionID present) are exempt — they are governed by the
-// backlogged ext-6.3 continuation-chain cap (docs/BACKLOG.md).
-const dispatchHashCount = new Map<string, Map<string, number>>()
+// ext 6.4: per-session identical-dispatch state —
+// Map<parentSessionID, Map<digest-bucket, BucketPair[]>>. Fix round 1 (PR #5 CodeRabbit
+// finding): the 32-bit djb2 digest is a BUCKET INDEX only — collisions are real, so each
+// bucket stores the exact (agent, prompt) pairs it has seen and they are compared for
+// identity BEFORE incrementing; a different pair in the same bucket gets its own counter
+// instead of merging into another pair's count. Sits beside the gate Maps at module scope
+// with the same fail-closed restart/hot-reload semantics (cleared when the process
+// restarts or the plugin reloads). Fresh dispatches only: continuations (input.sessionID
+// present) are exempt — they are governed by the backlogged ext-6.3 continuation-chain
+// cap (docs/BACKLOG.md).
+type BucketPair = { agent: string; prompt: string; count: number }
+const dispatchHashCount = new Map<string, Map<string, BucketPair[]>>()
 
 // djb2 (32-bit), inline per the ext-6.4 spec — no new imports. Returns an unsigned
 // decimal string so the digest can key the counter Map directly.
@@ -281,6 +288,12 @@ function djb2(s: string): string {
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
   return String(h >>> 0)
 }
+
+// ext 6.4 test seam (fix round 1): the breaker's djb2 digest, exposed in the same
+// object-with-fn style as _testStat (one seam convention). Production default is the
+// real hash; the collision-independence tests CALL it to brute-force a real 32-bit
+// collision pair (never stubbed — no behavior is faked through this seam).
+export const _djb2 = { fn: djb2 }
 
 function isGatedTool(tool: string): boolean {
   if (GATED_TOOLS.has(tool)) return true
@@ -455,10 +468,23 @@ export default Plugin.define({
             perSessionCounts = new Map()
             dispatchHashCount.set(event.sessionID, perSessionCounts)
           }
-          const identicalHash = djb2(`${String(input.agent)}\u0000${prompt}`)
-          const identicalCount = (perSessionCounts.get(identicalHash) ?? 0) + 1
-          perSessionCounts.set(identicalHash, identicalCount)
-          if (identicalCount >= IDENTICAL_CAP) throw new Error(denyIdenticalLoop(identicalCount))
+          const dispatchAgent = String(input.agent)
+          const identicalDigest = _djb2.fn(`${dispatchAgent}\u0000${prompt}`)
+          // Fix round 1: digest = bucket index; identity = exact (agent, prompt) strings.
+          // Linear scan of a bucket is fine — dispatch volume per session is small.
+          let bucket = perSessionCounts.get(identicalDigest)
+          if (!bucket) {
+            bucket = []
+            perSessionCounts.set(identicalDigest, bucket)
+          }
+          let pair = bucket.find((e) => e.agent === dispatchAgent && e.prompt === prompt)
+          if (!pair) {
+            pair = { agent: dispatchAgent, prompt, count: 0 }
+            bucket.push(pair)
+          }
+          // Increment-then-check, unchanged: a denied dispatch still counts.
+          pair.count += 1
+          if (pair.count >= IDENTICAL_CAP) throw new Error(denyIdenticalLoop(pair.count))
         }
       } else if (STITCH_PROMPT_TOOLS.has(event.tool)) {
         const prompt = typeof input.prompt === "string" ? input.prompt : ""
