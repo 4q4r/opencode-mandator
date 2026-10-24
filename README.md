@@ -30,11 +30,14 @@ Five deterministic layers, enforced in-process by an OpenCode v2 plugin
 | :-- | 1 | `agent: "general"` dispatches are **FORBIDDEN** | `subagent`, any session state |
 | :-- | 2 | Every dispatch requires **`background: true`** — deny, never rewrite | `subagent`, strict (`false` and omitted both deny) |
 | :-- | 3 | **Skill gate**: calls denied until the session loaded `brainstorming` + `grilling` + `build-with-exa` via `skill`… | `edit`, `write`, `shell`, `bash`, `apply_patch`, `subagent`, `webfetch`, `websearch`, `execute`, any `*exa*` MCP tool |
-| :-- | 4 | **Memory gate**: …and read `~/.config/opencode/MEMORY.md`; dispatches additionally need `subagent-driven-development` + `dispatching-parallel-agents` + reads of `memory/topics/workflow.md` + `workflow-git-pr.md` | same gated set (+ orchestrator preflight on `subagent`) |
+| :-- | 4 | **Memory gate**: …and read `~/.config/opencode/MEMORY.md`; dispatches additionally need `subagent-driven-development` + `dispatching-parallel-agents` + `prompt-engineering-patterns` + reads of `memory/topics/workflow.md` + `workflow-git-pr.md` | same gated set (+ orchestrator preflight on `subagent`) |
 | :-- | 5 | **PRIMER** injected as a system text part before every model request + one-line policy hint on the `subagent` tool description | every agent request / tool selection |
 
-Deny messages list **exactly what is missing** and end with the comply-then-rerun
-instruction. Absolute bans (rules 1–2) are checked before the skill gate.
+Deny messages list **exactly what is missing**, then the comply-then-rerun instruction,
+then a **COMPLIANCE WARNING** trailer: output violating the applied skills' requirements —
+including a badly written subagent brief — is declared REJECTED. The trailer is a declarative
+deterrent (owner decision); nothing in the plugin mechanically audits skill compliance.
+Absolute bans (rules 1–2) are checked before the skill gate.
 
 ## 🗺 Architecture
 
@@ -67,7 +70,7 @@ flowchart TD
 1. Ban checks first: `agent: "general"` → deny; `background !== true` → deny.
 2. Base gate: 3 skills + `MEMORY.md` read must already be in session state.
 3. Dispatch gate: + `subagent-driven-development`, `dispatching-parallel-agents`,
-   `workflow.md`, `workflow-git-pr.md` reads.
+   `prompt-engineering-patterns`, `workflow.md`, `workflow-git-pr.md` reads.
 4. All present → dispatch proceeds; anything missing → one exact-missing deny.
 
 ## 📂 Project Structure

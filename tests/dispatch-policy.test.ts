@@ -45,7 +45,7 @@ beforeAll(async () => {
   await plugin.setup(ctx)
 })
 
-describe("dispatch-policy — port of the wave3-a2 probe suite (gate extension 3)", () => {
+describe("dispatch-policy — port of the wave3-a2 probe suite (gate extensions 3-4)", () => {
   // --- Phase 0: hook registration ---
   test("execute.before registered", () => {
     expect(typeof hooks["tool.execute.before"]).toBe("function")
@@ -68,7 +68,9 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extension 3
     expect(msg!).toContain('skill "build-with-exa"')
     expect(msg!).toContain("read of ~/.config/opencode/MEMORY.md")
     expect(msg!).not.toContain("subagent-driven-development")
+    expect(msg!).not.toContain("prompt-engineering-patterns")
     expect(msg!).not.toContain("workflow.md")
+    expect(msg!).toContain("COMPLIANCE WARNING") // ext 4: every deny carries the deterrent trailer
   })
 
   test("subagent DENIED at zero; lists base + orchestrator items", async () => {
@@ -77,6 +79,7 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extension 3
     expect(msg!).toContain('skill "brainstorming"')
     expect(msg!).toContain('skill "subagent-driven-development"')
     expect(msg!).toContain('skill "dispatching-parallel-agents"')
+    expect(msg!).toContain('skill "prompt-engineering-patterns"')
     expect(msg!).toContain("workflow.md")
     expect(msg!).toContain("workflow-git-pr.md")
   })
@@ -125,11 +128,12 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extension 3
   })
 
   // --- subagent still DENIED at base-complete; lists ONLY orchestrator items ---
-  test("subagent at base-complete → deny lists exactly 2 skills + 2 workflow reads", async () => {
+  test("subagent at base-complete → deny lists exactly 3 skills + 2 workflow reads", async () => {
     const msg = await denyMsg({ tool: "subagent", sessionID: S, input: { agent: "code-reviewer", background: true } })
     expect(msg).not.toBeNull()
     expect(msg!).toContain('skill "subagent-driven-development"')
     expect(msg!).toContain('skill "dispatching-parallel-agents"')
+    expect(msg!).toContain('skill "prompt-engineering-patterns"')
     expect(msg!).toContain("read of ~/.config/opencode/memory/topics/workflow.md")
     expect(msg!).toContain("read of ~/.config/opencode/memory/topics/workflow-git-pr.md")
     expect(msg!).not.toContain('skill "brainstorming"')
@@ -144,23 +148,26 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extension 3
     expect(msg!).not.toContain("topics/workflow.md;")
     expect(msg!).toContain("workflow-git-pr.md")
     expect(msg!).toContain('skill "subagent-driven-development"')
+    expect(msg!).toContain('skill "prompt-engineering-patterns"')
   })
 
   // --- partial: second orchestrator skill loaded, but second workflow read still missing ---
-  test("partial orchestrator (1/2 workflow reads) → deny lists missing skill + missing read only", async () => {
+  test("partial orchestrator (1/2 workflow reads) → deny lists missing skills + missing read only", async () => {
     loadSkill(S, "dispatching-parallel-agents")
     const msg = await denyMsg({ tool: "subagent", sessionID: S, input: { agent: "code-reviewer", background: true } })
     expect(msg).not.toBeNull()
     expect(msg!).toContain('skill "subagent-driven-development"')
     expect(msg!).not.toContain('skill "dispatching-parallel-agents"')
+    expect(msg!).toContain('skill "prompt-engineering-patterns"')
     expect(msg!).toContain("workflow-git-pr.md")
     expect(msg!).not.toContain("topics/workflow.md;")
     expect(msg!).not.toContain("MEMORY.md")
   })
 
   // --- full compliance → subagent passes (workflow-git-pr via absolute path) ---
-  test("full compliance (5 skills + 3 reads) lifts the dispatch gate", async () => {
+  test("full compliance (6 skills + 3 reads) lifts the dispatch gate", async () => {
     loadSkill(S, "subagent-driven-development")
+    loadSkill(S, "prompt-engineering-patterns")
     loadRead(S, `${HOME}/.config/opencode/memory/topics/workflow-git-pr.md`)
     const m2 = await denyMsg({ tool: "subagent", sessionID: S, input: { agent: "code-reviewer", background: true } })
     expect(m2).toBeNull()
@@ -200,12 +207,14 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extension 3
     const msg = await denyMsg({ tool: "subagent", sessionID: "sess-3", input: { agent: "general", background: true } })
     expect(msg).not.toBeNull()
     expect(msg!).toContain("FORBIDDEN")
+    expect(msg!).toContain("COMPLIANCE WARNING")
   })
 
   test("background message still wins (before gate)", async () => {
     const msg = await denyMsg({ tool: "subagent", sessionID: "sess-3", input: { agent: "code-reviewer", background: false } })
     expect(msg).not.toBeNull()
     expect(msg!).toContain("background:true")
+    expect(msg!).toContain("COMPLIANCE WARNING")
   })
 
   // --- execute (Code Mode) gated at zero state — ext-2 probe semantics (bypass surface) ---
@@ -242,6 +251,7 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extension 3
     const primer = sys[0]?.text ?? ""
     expect(primer).toContain("a `read` of ~/.config/opencode/MEMORY.md")
     expect(primer).toContain("subagent-driven-development")
+    expect(primer).toContain("prompt-engineering-patterns")
     expect(primer).toContain("workflow-git-pr.md")
   })
 
