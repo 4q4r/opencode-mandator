@@ -49,6 +49,13 @@ import path from "node:path"
 //  11. Agent-missing deny (ext 6.7): dispatches with `agent` missing/empty get an
 //      actionable deny instead of the generic runtime schema error; the "general" ban
 //      still wins for agent === "general".
+//  12. Identical-dispatch circuit breaker (ext 6.4): a fresh dispatch identical to an
+//      earlier one in the same session (djb2 over agent + NUL + prompt, per-session
+//      counter) is DENIED when the count reaches 4 — 3 identical executions pass, the
+//      4th is denied. Runs LAST on the fresh path (after the structure and
+//      memory-mandate checks, so compliance-teaching denies keep precedence). The deny
+//      deliberately carries NO compliance trailer and NO re-run instruction: re-running
+//      is exactly what is being denied.
 //
 // Safety valves:
 //   - OPENCODE_ENFORCE_OFF=1 disables all plugin behavior (checked per hook call).
@@ -260,6 +267,21 @@ export const _testStat = {
 const loadedSkills = new Map<string, Set<string>>()
 const readTargets = new Map<string, Set<string>>()
 
+// ext 6.4: per-session identical-dispatch counter — Map<parentSessionID, Map<hash, count>>.
+// Sits beside the gate Maps at module scope with the same fail-closed restart/hot-reload
+// semantics (cleared when the process restarts or the plugin reloads). Fresh dispatches
+// only: continuations (input.sessionID present) are exempt — they are governed by the
+// backlogged ext-6.3 continuation-chain cap (docs/BACKLOG.md).
+const dispatchHashCount = new Map<string, Map<string, number>>()
+
+// djb2 (32-bit), inline per the ext-6.4 spec — no new imports. Returns an unsigned
+// decimal string so the digest can key the counter Map directly.
+function djb2(s: string): string {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
+  return String(h >>> 0)
+}
+
 function isGatedTool(tool: string): boolean {
   if (GATED_TOOLS.has(tool)) return true
   if (tool.includes("exa")) return true // MCP exa tools appear as exa_<...>_exa
@@ -339,6 +361,24 @@ const DENY_MEMORY_OVERWRITE =
   "supersede-in-place, never full-file write). Creating a NEW memory file is allowed." +
   COMPLIANCE_WARNING
 
+// ext 6.4: identical-dispatch circuit breaker — increment-then-check per session; the
+// deny fires when the count of identical fresh dispatches (same agent + prompt) reaches
+// IDENTICAL_CAP (3 identical executions pass, the 4th is denied). Owner approved 2026-10-25.
+const IDENTICAL_CAP = 4
+
+// Deliberate deltas vs the analyst sketch, owner decision (ext-6.4 brief): this deny
+// carries NO COMPLIANCE_WARNING trailer (its "must be re-dispatched" wording contradicts
+// the guard) and NO "re-run this exact call" instruction (re-running is exactly what is
+// being denied). The deny is FINAL for identical resends: differentiate the briefs or
+// escalate. It is the plugin's only deny without the shared trailer (docs/RULES.md §3).
+function denyIdenticalLoop(n: number): string {
+  return (
+    `DENIED by dispatch-policy plugin: identical dispatch sent ${n} times in this session — ` +
+    "runaway-loop guard on identical (agent, prompt) pairs. This deny is final for identical " +
+    "resends: differentiate the briefs (per-perspective prompts) or escalate to the owner."
+  )
+}
+
 function denyStructure(target: string, missing: string[], profile: ReadonlyArray<BlockKey>): string {
   const guide = profile.map((key) => BLOCKS[key].name).join(" / ")
   return (
@@ -403,6 +443,22 @@ export default Plugin.define({
           // memory-mandate). Continuations (sessionID present) are exempt: the original
           // dispatch already passed.
           if (!MEMORY_MANDATE_RE.test(prompt)) throw new Error(DENY_MEMORY_MANDATE)
+          // ext 6.4: identical-dispatch circuit breaker — LAST check on the fresh path,
+          // after the structure and memory-mandate checks (compliance-teaching denies
+          // keep precedence: a loop of malformed briefs keeps receiving the structure
+          // deny, which is the correct lesson). Increment-then-check per session:
+          // 3 identical executions pass, the 4th identical dispatch is denied. Different
+          // (agent, prompt) pairs never share a counter; continuations never reach this
+          // branch (sessionID present → exempt, governed by the backlogged ext-6.3 cap).
+          let perSessionCounts = dispatchHashCount.get(event.sessionID)
+          if (!perSessionCounts) {
+            perSessionCounts = new Map()
+            dispatchHashCount.set(event.sessionID, perSessionCounts)
+          }
+          const identicalHash = djb2(`${String(input.agent)}\u0000${prompt}`)
+          const identicalCount = (perSessionCounts.get(identicalHash) ?? 0) + 1
+          perSessionCounts.set(identicalHash, identicalCount)
+          if (identicalCount >= IDENTICAL_CAP) throw new Error(denyIdenticalLoop(identicalCount))
         }
       } else if (STITCH_PROMPT_TOOLS.has(event.tool)) {
         const prompt = typeof input.prompt === "string" ? input.prompt : ""

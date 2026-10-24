@@ -2,14 +2,15 @@
 
 The ext-6 analyst report (2026-10-25, §3) proposed seven enforcement layers. Wave 1 shipped
 ext-6.1 (memory-mandate keyword), ext-6.6 (memory whole-file overwrite guard), and ext-6.7
-(agent-missing deny) — see `docs/RULES.md` §2 "ext 6 wave". The remaining proposals live here
-with their owner-decided status. Full specs: the analyst report §ext-6.2–6.5.
+(agent-missing deny); wave 2 shipped ext-6.4 (identical-dispatch circuit breaker,
+2026-10-25) — see `docs/RULES.md` §2 "ext 6 wave". The remaining proposals (6.2, 6.3, 6.5)
+live here with their owner-decided status. Full specs: the analyst report §ext-6.2–6.5.
 
 | # | Layer | Priority | Status |
 | :-- | :-- | :-- | :-- |
 | 1 | ext-6.2 structured deny/dispatch audit log | P1 | Backlogged by owner 2026-10-25 |
 | 2 | ext-6.3 continuation-chain cap (>6) | P2 | BLOCKED ON DESIGN |
-| 3 | ext-6.4 identical-dispatch circuit breaker (≥4) | P2 | Awaiting owner verdict |
+| 3 | ext-6.4 identical-dispatch circuit breaker (≥4) | P2 | IMPLEMENTED 2026-10-25 (owner approved) — see src/dispatch-policy.ts |
 | 4 | ext-6.5 push-to-main segment guard | P2 | Parked |
 
 ## ext-6.2 — Structured deny/dispatch audit log (P1, backlogged by owner 2026-10-25)
@@ -34,13 +35,17 @@ designs to evaluate before implementation:
 - adaptive cap derived from per-session behavior (no knob at all, self-tuning);
 - controller-approved one-shot override (explicit raise path, audited).
 
-## ext-6.4 — Identical-dispatch circuit breaker (awaiting owner verdict)
+## ext-6.4 — Identical-dispatch circuit breaker (implemented 2026-10-25)
 
 Proposed: deny when the same (agent, prompt) pair is dispatched ≥4 times in one session
 (fresh dispatches only; continuations governed by ext-6.3). Grounding: post-plugin repeats
 already observed at ×3 (×2 sessions) and ×4 (×1); all-time real max ×6 (an adversarial-review
-panel that could legitimately re-run with differentiated briefs). The controller explains the
-trade-off to the owner; implementation waits for the verdict.
+panel that could legitimately re-run with differentiated briefs). IMPLEMENTED 2026-10-25
+(owner approved): threshold 4 (increment-then-check — 3 identical executions pass), djb2
+digest over agent + NUL + prompt, per-session counter at module scope, check runs LAST on
+the fresh path, and the deny carries no compliance trailer and no re-run instruction
+(deliberate deltas vs the sketch — the deny is final for identical resends). Normative
+spec: `docs/RULES.md` §2 row 9 and §3 row 8.
 
 ## ext-6.5 — Shell hard-guards (parked 2026-10-25)
 

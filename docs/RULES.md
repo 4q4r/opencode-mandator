@@ -35,6 +35,7 @@ non-exa MCP tools.
 | 6 | Fresh `subagent` dispatch (additionally) | The brief must **mandate reading global memory** — keyword presence: `MEMORY.md`, `memory/topics`, `memory/projects`, "global memory", or the RU «глобальная память» forms — see "ext 6 wave" below |
 | 7 | `write` to an existing global memory file | Never allowed, any state — append/supersede via `edit`; creating a NEW memory file passes |
 | 8 | `subagent` with `agent` missing/empty | Never allowed, any state (actionable deny; `agent: "general"` still gets the row-3 ban message) |
+| 9 | `subagent` fresh dispatch identical to an earlier one in the same session (same agent + prompt), count reaching 4 | Never allowed from the 4th identical fresh dispatch — 3 identical executions pass; per-session counter (djb2), continuations exempt — see "ext 6 wave" below |
 
 Rationale (owner decision 2026-10-24): **prompt-engineering-patterns** is mandated on the
 dispatch path because dispatch briefs (subagent prompts) and agent-MCP prompts are prompts —
@@ -67,8 +68,9 @@ Exemptions (by design — don't block commands where free text cannot or should 
   would silently disable the check (same degradation as the tool-description hint).
 
 Ordering: bans (incl. rows 3, 4, 8) → skill/memory gate → structure check → memory-mandate
-check (fresh dispatches; compliance first: load the skill, then the brief is validated,
-then its memory mandate is verified).
+check → identical-dispatch breaker (rows 6 and 9: fresh dispatches only; compliance first —
+load the skill, then the brief is validated, then its memory mandate is verified, and only
+then does the identical-loop counter run, so compliance-teaching denies keep precedence).
 
 Recording rules (what counts as compliance):
 
@@ -80,10 +82,11 @@ Recording rules (what counts as compliance):
 
 ### ext 6 wave (owner decisions 2026-10-25; spec source: the ext-6 analyst report, 2026-10-25)
 
-Wave 1 shipped three deterministic layers; the rest of the analyst proposals are tracked in
-[`docs/BACKLOG.md`](BACKLOG.md) (6.2 audit log, 6.3 continuation-chain cap, 6.4
-identical-dispatch breaker, 6.5 shell guards — the pkill/killall slice moved to native
-`opencode.json` V2 permission rules, owner decision 2026-10-25).
+Wave 1 shipped three deterministic layers (6.1, 6.6, 6.7); wave 2 shipped the
+identical-dispatch circuit breaker (6.4) on 2026-10-25. The remaining analyst proposals are
+tracked in [`docs/BACKLOG.md`](BACKLOG.md) (6.2 audit log, 6.3 continuation-chain cap,
+6.5 shell guards — the pkill/killall slice moved to native `opencode.json` V2 permission
+rules, owner decision 2026-10-25).
 
 **Memory-mandate keyword (6.1).** A fresh dispatch brief (`sessionID` absent) must contain a
 memory-reading mandate — keyword presence, case-insensitive:
@@ -111,6 +114,23 @@ Missing key`). The check sits before the `general` ban, but `agent: "general"` i
 string, so the ban message still wins for that value. Message-quality layer: the runtime
 already blocks the missing-key subclass.
 
+**Identical-dispatch circuit breaker (6.4, wave 2 — owner approved 2026-10-25).** A fresh
+dispatch (`sessionID` absent) identical to an earlier one **in the same session** — same
+`agent` + `prompt`, keyed by an inline djb2 digest over `agent + "\u0000" + prompt` — is
+denied when the per-session count reaches **4**: increment-then-check, so 3 identical
+executions pass and the 4th is denied (a legitimate reviewer panel of 3 still fits; a 4th
+identical resend is a runaway loop). The counter is a `Map<parentSessionID, Map<hash, count>>`
+at module scope beside the gate Maps — same fail-closed restart/hot-reload semantics by
+construction. Continuations are fully exempt (they are governed by the backlogged ext-6.3
+depth cap). The check runs LAST on the fresh path, after the structure and memory-mandate
+checks: compliance-teaching denies keep precedence, so a loop of malformed briefs keeps
+receiving the structure deny — the correct lesson. Deltas vs the analyst sketch, deliberate
+(owner decision): the deny message carries **no COMPLIANCE WARNING trailer and no "re-run
+this exact call" instruction** — re-running is exactly what is being denied, and the
+trailer's "must be re-dispatched" wording contradicts the guard. The deny is final for
+identical resends: differentiate the briefs (per-perspective prompts) or escalate to the
+owner.
+
 ## 3. Deny messages
 
 Deny messages list **exactly what is missing** (dynamic), then the comply-then-rerun
@@ -127,8 +147,11 @@ the procedural one.
 | 5 | Fresh brief without a memory mandate (§2 row 6) | `DENIED by dispatch-policy plugin: the dispatch brief does not mandate reading global memory (owner hard dispatch protocol: every subagent brief must instruct the subagent to read ~/.config/opencode/MEMORY.md + memory/topics/* + memory/projects/* and list what it read in its report). Add the memory mandate to the brief, then re-run this exact call.` + trailer |
 | 6 | `write` over an existing global memory file (§2 row 7) | `DENIED by dispatch-policy plugin: whole-file write over an EXISTING global memory file is forbidden — whole-file rewrites of memory race concurrent agents (2026-10-09/10 incidents). Append or supersede the entry via the `edit` tool instead (append-only by anchors; supersede-in-place, never full-file write). Creating a NEW memory file is allowed.` + trailer |
 | 7 | `agent` missing/empty (§2 row 8) | `DENIED by dispatch-policy plugin: the dispatch is missing a specialized agent type (agent missing or empty). Pick a specialized agent type — e.g. backend-architect, code-reviewer, frontend-developer, trend-researcher (full list: opencode debug agents) — then re-run this exact call.` + trailer |
+| 8 | Identical fresh dispatch, count reaching 4 in one session (§2 row 9) | `DENIED by dispatch-policy plugin: identical dispatch sent <N> times in this session — runaway-loop guard on identical (agent, prompt) pairs. This deny is final for identical resends: differentiate the briefs (per-perspective prompts) or escalate to the owner.` — **no trailer, the deliberate exception to the "+ trailer" convention**: the trailer's "must be re-dispatched" wording contradicts the guard, and the message intentionally carries no "re-run this exact call" instruction (re-running is exactly what is denied). `<N>` is the live per-session count; the first deny fires at N = 4 |
 
-Shared trailer (verbatim, appended to every deny message):
+Shared trailer (verbatim, appended to every deny message **except row 8** — the
+identical-dispatch breaker deny is final for identical resends and deliberately omits both
+the trailer and any re-run instruction, owner decision 2026-10-25):
 
 ```
  COMPLIANCE WARNING: all output is audited against the requirements of the skills applied in this session — work that violates them is REJECTED and must be redone. This explicitly covers dispatches: a subagent sent with a poorly written brief (violating prompt-engineering requirements — vague task, missing context/constraints, no report contract) will be REJECTED and must be re-dispatched.
