@@ -40,9 +40,12 @@ import path from "node:path"
 //      «глобальная память» forms. Continuations (sessionID) exempt. Runs AFTER the
 //      structure check (ordering: bans → gate → structure → memory-mandate).
 //  10. Memory whole-file overwrite guard (ext 6.6): `write` over an EXISTING file under
-//      ~/.config/opencode/memory/ (incl. the root MEMORY.md) is DENIED — memory is
-//      append-only by anchors, supersede via `edit`; creating NEW memory files passes.
-//      Hygiene backstop, NOT a security boundary: a stat failure allows the call.
+//      the home-anchored ~/.config/opencode/memory/ tree (incl. the root MEMORY.md) is
+//      DENIED — memory is append-only by anchors, supersede via `edit`; creating NEW
+//      memory files passes. Paths are resolved before classification (normalize +
+//      containment — fix round 1); existence goes through the _testStat seam (tests stub
+//      it; they never touch real files under ~/.config/opencode/). Hygiene backstop, NOT
+//      a security boundary: a stat failure allows the call.
 //  11. Agent-missing deny (ext 6.7): dispatches with `agent` missing/empty get an
 //      actionable deny instead of the generic runtime schema error; the "general" ban
 //      still wins for agent === "general".
@@ -217,16 +220,37 @@ function classifyRead(p: unknown): string | undefined {
   return undefined
 }
 
-// ext 6.6: global memory targets — the memory tree (topics/, projects/) and the root
-// MEMORY.md index. The "/" delimiter after `memory` avoids sibling-dir false positives
-// (e.g. a hypothetical ~/.config/opencode/memory-cache/); the two canonical spellings
-// are matched explicitly and case-sensitively (Linux install).
+// ext 6.6 (fix round 1): global memory targets — the memory tree (topics/, projects/) and the
+// root MEMORY.md index. Matching is normalize + home-anchored containment: the previous
+// substring/ends-with match had (a) a BYPASS — absolute dot-segment paths like
+// ~/.config/opencode/./MEMORY.md matched no pattern, so a whole-file write over the real
+// MEMORY.md slipped past the guard — and (b) FALSE POSITIVES — /tmp/.config/opencode/memory/…
+// counted as memory though the documented target is the GLOBAL tree. Canonical rule: the path
+// resolves to exactly the home-anchored root MEMORY.md, or lands inside the home-anchored
+// memory tree (path.relative semantics: relative === "" or not ".."-prefixed and not
+// absolute). Case-sensitive by design (Linux install).
+const MEMORY_INDEX_PATH = path.resolve(os.homedir(), ".config", "opencode", "MEMORY.md")
+const MEMORY_TREE_PATH = path.resolve(os.homedir(), ".config", "opencode", "memory")
+
 function isGlobalMemoryPath(p: string): boolean {
-  return (
-    p.includes(".config/opencode/memory/") ||
-    p.endsWith(".config/opencode/memory") ||
-    p.endsWith(".config/opencode/MEMORY.md")
-  )
+  const resolved = path.resolve(p)
+  if (resolved === MEMORY_INDEX_PATH) return true
+  const rel = path.relative(MEMORY_TREE_PATH, resolved)
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))
+}
+
+// ext 6.6 test seam (fix round 1): production default is existsSync wrapped in try/catch
+// (fail-open). Tests must NEVER create or modify real files under ~/.config/opencode/ —
+// they stub _testStat.fn per test (existing → true; missing → false; throwing → the
+// guard's fail-open path) and restore it in afterEach.
+export const _testStat = {
+  fn: (p: string): boolean => {
+    try {
+      return fs.existsSync(p)
+    } catch {
+      return false
+    }
+  },
 }
 
 // Per-session compliance state; cleared on server restart (fail-closed: sessions
@@ -393,8 +417,11 @@ export default Plugin.define({
         // root MEMORY.md) is denied — memory is append-only by anchors, supersede via
         // `edit`; creating NEW memory files passes. Runs after the skill gate (the gate
         // already covers `write`). Runtime `write` input key is `path`; legacy stored
-        // calls used `filePath` — check BOTH, prefer `path`. Hygiene backstop, not a
-        // security boundary: a stat failure ALLOWS the call.
+        // calls used `filePath` — check BOTH, prefer `path`. The path is resolved BEFORE
+        // classification so dot/dot-dot segments cannot dodge the guard (fix round 1).
+        // Hygiene backstop, not a security boundary: a stat failure ALLOWS the call.
+        // Existence goes through the _testStat seam — production default is
+        // existsSync-with-fail-open; tests stub it and never touch the real home tree.
         const raw =
           typeof input.path === "string" && input.path !== ""
             ? input.path
@@ -402,11 +429,11 @@ export default Plugin.define({
               ? input.filePath
               : undefined
         if (raw !== undefined) {
-          const p = expandTilde(raw)
+          const p = path.resolve(expandTilde(raw))
           if (isGlobalMemoryPath(p)) {
             let exists = false
             try {
-              exists = fs.existsSync(p)
+              exists = _testStat.fn(p)
             } catch {
               exists = false // stat failure → allow (documented fail-open hygiene backstop)
             }

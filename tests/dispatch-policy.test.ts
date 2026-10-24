@@ -4,9 +4,10 @@
 // order (bun runs tests in declaration order within a file). Structural changes only:
 // bun:test harness instead of the linear check() script, and os.homedir() instead of
 // the hardcoded "/home/whoami" (tilde-expansion parity with the plugin's own expansion).
-import { beforeAll, describe, expect, test } from "bun:test"
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import os from "node:os"
-import plugin from "../src/dispatch-policy.ts"
+import path from "node:path"
+import plugin, { _testStat } from "../src/dispatch-policy.ts"
 
 const hooks: Record<string, (event: any) => any> = {}
 let transformed: Record<string, { description: string }> | null = null
@@ -411,6 +412,13 @@ describe("dispatch-policy — ext 6 wave 1 (memory mandate, memory-overwrite gua
     loadRead(sid, `${HOME}/.config/opencode/memory/topics/workflow-git-pr.md`)
   }
 
+  // ext-6 fix round 1 (finding 6): compliance is a beforeEach fixture so single-test
+  // runs (`bun test -t …`) reach the intended policy assertions instead of dying at the
+  // skill gate. The dedicated zero-state sessions used by ordering/ban tests stay zero-state.
+  beforeEach(() => {
+    complyAll(E6)
+  })
+
   // Structured brief with NO memory-mandate keyword anywhere (all five blocks present,
   // so the structure check passes and the memory-mandate check is what must fire).
   const STRUCTURED_NO_MEMORY =
@@ -430,7 +438,6 @@ describe("dispatch-policy — ext 6 wave 1 (memory mandate, memory-overwrite gua
 
   // --- ext 6.1: memory-mandate keyword on fresh dispatch briefs ---
   test("fresh structured brief WITHOUT a memory mandate → deny names the missing mandate", async () => {
-    complyAll(E6)
     const m = await denyMsg({
       tool: "subagent",
       sessionID: E6,
@@ -470,24 +477,58 @@ describe("dispatch-policy — ext 6 wave 1 (memory mandate, memory-overwrite gua
     expect(m!).not.toContain("does not mandate reading global memory")
   })
 
-  // --- ext 6.6: whole-file `write` over an EXISTING global memory file ---
-  test("write over the existing root MEMORY.md (~ form) → memory-overwrite deny", async () => {
+  // --- ext 6.6: whole-file `write` over an EXISTING global memory file — HERMETIC
+  // (fix round 1, finding 2). Existence is decided exclusively by the _testStat seam
+  // stub: no test creates, writes, or deletes anything under ~/.config/opencode/, and
+  // the suite passes on a machine where the real memory files do not exist.
+  const MEM_INDEX = path.resolve(os.homedir(), ".config", "opencode", "MEMORY.md")
+  const MEM_WORKFLOW = path.resolve(os.homedir(), ".config", "opencode", "memory", "topics", "workflow.md")
+  let defaultStat: (p: string) => boolean
+  beforeEach(() => {
+    defaultStat = _testStat.fn
+  })
+  afterEach(() => {
+    _testStat.fn = defaultStat
+  })
+
+  test("write over the root MEMORY.md (canonical ~ form, stubbed existing) → memory-overwrite deny", async () => {
+    _testStat.fn = (p) => p === MEM_INDEX
     const m = await denyMsg({ tool: "write", sessionID: E6, input: { path: "~/.config/opencode/MEMORY.md" } })
     expect(m).not.toBeNull()
     expect(m!).toContain("whole-file write over an EXISTING global memory file")
     expect(m!).toContain("COMPLIANCE WARNING")
   })
 
-  test("write creating a NEW file under memory/topics/ passes (no overwrite)", async () => {
+  test("write over MEMORY.md via an absolute dot-segment path → deny (normalize closes the bypass)", async () => {
+    _testStat.fn = (p) => p === MEM_INDEX
     const m = await denyMsg({
       tool: "write",
       sessionID: E6,
-      input: { path: "~/.config/opencode/memory/topics/zzz-ext6-nonexistent-topic.md" },
+      input: { path: `${HOME}/.config/opencode/./MEMORY.md` },
     })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("whole-file write over an EXISTING global memory file")
+  })
+
+  test("write over MEMORY.md via a ..-segment path → deny (same normalize class)", async () => {
+    _testStat.fn = (p) => p === MEM_INDEX
+    const m = await denyMsg({
+      tool: "write",
+      sessionID: E6,
+      input: { path: `${HOME}/.config/opencode/memory/../MEMORY.md` },
+    })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("whole-file write over an EXISTING global memory file")
+  })
+
+  test("write under /tmp/.config/opencode/memory/ is NOT global memory → passes (no false positive)", async () => {
+    _testStat.fn = () => true // even "existing", it is not a global-memory target
+    const m = await denyMsg({ tool: "write", sessionID: E6, input: { path: "/tmp/.config/opencode/memory/x.md" } })
     expect(m).toBeNull()
   })
 
   test("write to a non-memory path passes", async () => {
+    _testStat.fn = () => true
     const m = await denyMsg({
       tool: "write",
       sessionID: E6,
@@ -496,7 +537,18 @@ describe("dispatch-policy — ext 6 wave 1 (memory mandate, memory-overwrite gua
     expect(m).toBeNull()
   })
 
+  test("write creating a NEW file under memory/topics/ passes (seam: missing → false)", async () => {
+    _testStat.fn = () => false
+    const m = await denyMsg({
+      tool: "write",
+      sessionID: E6,
+      input: { path: "~/.config/opencode/memory/topics/zzz-ext6-nonexistent-topic.md" },
+    })
+    expect(m).toBeNull()
+  })
+
   test("legacy `filePath` input key with an existing memory path → deny (both keys checked)", async () => {
+    _testStat.fn = (p) => p === MEM_WORKFLOW
     const m = await denyMsg({
       tool: "write",
       sessionID: E6,
@@ -507,6 +559,7 @@ describe("dispatch-policy — ext 6 wave 1 (memory mandate, memory-overwrite gua
   })
 
   test("`path` wins over legacy `filePath` when both are present", async () => {
+    _testStat.fn = () => true // everything "exists"; only `path` may be inspected
     const m = await denyMsg({
       tool: "write",
       sessionID: E6,
@@ -515,6 +568,14 @@ describe("dispatch-policy — ext 6 wave 1 (memory mandate, memory-overwrite gua
         filePath: `${HOME}/.config/opencode/MEMORY.md`,
       },
     })
+    expect(m).toBeNull()
+  })
+
+  test("seam throwing → allow (documented fail-open hygiene backstop)", async () => {
+    _testStat.fn = () => {
+      throw new Error("stat exploded")
+    }
+    const m = await denyMsg({ tool: "write", sessionID: E6, input: { path: "~/.config/opencode/MEMORY.md" } })
     expect(m).toBeNull()
   })
 
