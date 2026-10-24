@@ -22,7 +22,7 @@
 
 ## 📖 What is enforced
 
-Five deterministic layers, enforced in-process by an OpenCode v2 plugin
+Six deterministic layers, enforced in-process by an OpenCode v2 plugin
 (`@opencode/plugin` `Plugin.define`). Full normative spec: [`docs/RULES.md`](docs/RULES.md).
 
 | :-- | # | Rule | Scope |
@@ -32,6 +32,7 @@ Five deterministic layers, enforced in-process by an OpenCode v2 plugin
 | :-- | 3 | **Skill gate**: calls denied until the session loaded `brainstorming` + `grilling` + `build-with-exa` via `skill`… | `edit`, `write`, `shell`, `bash`, `apply_patch`, `subagent`, `webfetch`, `websearch`, `execute`, any `*exa*` MCP tool |
 | :-- | 4 | **Memory gate**: …and read `~/.config/opencode/MEMORY.md`; dispatches additionally need `subagent-driven-development` + `dispatching-parallel-agents` + `prompt-engineering-patterns` + reads of `memory/topics/workflow.md` + `workflow-git-pr.md` | same gated set (+ orchestrator preflight on `subagent`) |
 | :-- | 5 | **PRIMER** injected as a system text part before every model request + one-line policy hint on the `subagent` tool description | every agent request / tool selection |
+| :-- | 6 | **Prompt-structure gate**: a fresh dispatch brief must contain Role / Task / Context / Constraints / Output format (per `prompt-engineering-patterns`); the 3 Stitch free-text prompt tools need a 4-block profile on prompts ≥ 120 chars | `subagent` (fresh) + `stitch_generate_screen_from_text` / `stitch_edit_screens` / `stitch_generate_variants` |
 
 Deny messages list **exactly what is missing**, then the comply-then-rerun instruction,
 then a **COMPLIANCE WARNING** trailer: output violating the applied skills' requirements —
@@ -50,10 +51,16 @@ flowchart TD
     E -- no --> D2[DENY: background:true message]
     E -- yes --> F
     B -- no --> F{gated tool?}
-    F -- no --> G[ALLOW]
+    F -- no --> S2{stitch prompt tool?}
+    S2 -- no --> G[ALLOW]
+    S2 -- yes --> S3{prompt ≥ 120 chars and structured?}
+    S3 -- no --> D4[DENY: missing blocks]
+    S3 -- yes --> G
     F -- yes --> H{session state complete?}
     H -- no --> D3[DENY: lists exactly what is missing]
-    H -- yes --> G
+    H -- yes --> S1{fresh dispatch, brief structured?}
+    S1 -- no --> D4
+    S1 -- yes --> G
     K[skill executed OK / read of tracked memory OK] -->|execute.after records| H
     P[PRIMER + description hint<br/>injected at selection/request time] -.-> A
 ```
@@ -71,7 +78,9 @@ flowchart TD
 2. Base gate: 3 skills + `MEMORY.md` read must already be in session state.
 3. Dispatch gate: + `subagent-driven-development`, `dispatching-parallel-agents`,
    `prompt-engineering-patterns`, `workflow.md`, `workflow-git-pr.md` reads.
-4. All present → dispatch proceeds; anything missing → one exact-missing deny.
+4. Prompt-structure check on the brief: Role / Task / Context / Constraints /
+   Output format must all be present (continuations with `sessionID` exempt).
+5. All present → dispatch proceeds; anything missing → one exact-missing deny.
 
 ## 📂 Project Structure
 

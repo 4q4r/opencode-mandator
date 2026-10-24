@@ -31,10 +31,40 @@ non-exa MCP tools.
 | 2 | `subagent` dispatch (additionally) | `skill` for **subagent-driven-development** + **dispatching-parallel-agents** + **prompt-engineering-patterns** + completed reads of `~/.config/opencode/memory/topics/workflow.md` **and** `workflow-git-pr.md` |
 | 3 | `subagent` with `agent: "general"` | Never allowed, any state |
 | 4 | `subagent` without `background: true` | Never allowed, any state (strict: `false` **and** omitted both deny) |
+| 5 | Fresh `subagent` dispatch / long Stitch prompt | The free-text `prompt` must contain the structural blocks — see "Prompt-structure gate" below |
 
 Rationale (owner decision 2026-10-24): **prompt-engineering-patterns** is mandated on the
 dispatch path because dispatch briefs (subagent prompts) and agent-MCP prompts are prompts —
 the orchestrator must apply prompt-engineering patterns when writing them.
+
+### Prompt-structure gate (ext 5, owner decision 2026-10-24)
+
+Deterministic keyword-presence check on free-text `prompt` inputs — the checkable subset
+of "no bad prompts". Source of truth: the **prompt-engineering-patterns** skill
+(`references/system-prompts.md` — "Effective System Prompt Structure": Role + Expertise +
+Behavioral Guidelines + Output Format + Constraints; every template in the library carries
+Task / Context / Requirements / Constraints / Output). Matching is tolerant to header or
+inline forms (`## Task`, `**Task:**`, `Task:`) and to Russian block names (`Контекст:`).
+
+| :-- | Surface | Required blocks |
+| :-- | :-- | :-- |
+| `subagent`, fresh dispatch (`sessionID` absent) | Role / Task / Context / Constraints / Output format |
+| `stitch_generate_screen_from_text`, `stitch_edit_screens`, `stitch_generate_variants`, `prompt` ≥ 120 chars | Task / Context / Constraints / Output format (no Role — the tool's role is fixed) |
+
+Exemptions (by design — don't block commands where free text cannot or should not be forced):
+
+- Subagent **continuations** (`sessionID` present): the original dispatch already passed.
+- Stitch prompts **shorter than 120 chars**: the tools themselves recommend re-calling with
+  an accepted suggestion verbatim (e.g. "Yes, make them all") — tactical follow-ups flow.
+- All other Stitch surfaces: ID/enum tools; `create_project.title` (a label, not a prompt);
+  `designMd` / `styleGuidelines` (design-spec genre, not task prompts); `upload_design_md`
+  (base64 file upload).
+- Runtime names `stitch_*` follow the verified flat MCP convention (`exa_web_search_exa`
+  lives in the session DB); no live Stitch calls existed at implementation time — a rename
+  would silently disable the check (same degradation as the tool-description hint).
+
+Ordering: bans → skill/memory gate → structure check (compliance first: load the skill,
+then the brief is validated).
 
 Recording rules (what counts as compliance):
 
@@ -56,6 +86,7 @@ procedural one.
 | 1 | `agent: "general"` | `DENIED by dispatch-policy plugin: agent type "general" is FORBIDDEN by owner mandate. Re-dispatch with a specialized agent type — e.g. code-reviewer, backend-architect, frontend-developer, trend-researcher (full list: opencode debug agents).` + trailer |
 | 2 | `background !== true` | `DENIED by dispatch-policy plugin: owner mandate requires background:true on every subagent dispatch. Re-dispatch the SAME call with background:true.` + trailer |
 | 3 | Gated call, missing items | `Owner mandate: this action requires, in this session first: <missing items joined by "; ">. Load skills via the `skill` tool (one call per skill); read memory files with the `read` tool. Then re-run this exact call.` + trailer |
+| 4 | Structure check failed (§2 ext 5) | `DENIED by dispatch-policy plugin: prompt-structure check (per the prompt-engineering-patterns skill) on the <target> prompt failed. Missing required block(s): <names joined by "; ">. Structure the prompt with explicit blocks: <profile blocks joined by " / ">. Then re-run this exact call.` + trailer. `<target>` is `subagent dispatch` or `MCP tool "<name>"`; an absent/empty dispatch prompt prepends `The dispatch prompt is missing or empty. ` |
 
 Shared trailer (verbatim, appended to all three):
 
