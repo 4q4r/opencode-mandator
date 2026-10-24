@@ -41,12 +41,15 @@ const loadRead = (sid: string, p: string, status = "completed") =>
 const HOME = os.homedir()
 const S = "sess-ext3"
 
-// ext 5 fixtures — briefs that satisfy the prompt-structure profiles.
+// ext 5 fixtures — briefs that satisfy the prompt-structure profiles. Since ext 6.1 a
+// compliant fresh brief ALSO mandates reading global memory (the GOOD_PROMPT carries the
+// owner's canonical sentence; without it the memory-mandate check would deny).
 const GOOD_PROMPT =
   "Role: you are a senior Go engineer. Task: fix the race in the ingest loop. " +
   "Context: the worker pool drops events under load; repro in tests/race_test.go. " +
   "Constraints: no new dependencies; the public API must stay stable; all tests must pass. " +
-  "Output format: root-cause summary, the diff, and test results."
+  "Output format: root-cause summary, the diff, and test results. " +
+  "Before starting, read ~/.config/opencode/MEMORY.md and memory/topics/workflow.md; list what you read in your report."
 const GOOD_STITCH_PROMPT =
   "Task: generate a mobile analytics dashboard screen. Context: SaaS fitness app, dark-first " +
   "brand, existing sidebar navigation. Constraints: WCAG AA contrast, 8pt spacing grid, no " +
@@ -386,5 +389,174 @@ describe("dispatch-policy — ext 5 prompt-structure gate", () => {
     expect(m).not.toBeNull()
     expect(m!).toContain('skill "brainstorming"')
     expect(m!).not.toContain("prompt-structure check")
+  })
+})
+
+// --- ext 6 wave 1: memory-mandate keyword (6.1), memory whole-file overwrite guard
+// (6.6), actionable agent-missing deny (6.7). Fixtures mirror the ext 5 style.
+describe("dispatch-policy — ext 6 wave 1 (memory mandate, memory-overwrite guard, agent-missing deny)", () => {
+  const E6 = "sess-ext6" // fully compliant session for the ext 6 checks
+  const complyAll = (sid: string) => {
+    for (const s of [
+      "brainstorming",
+      "grilling",
+      "build-with-exa",
+      "subagent-driven-development",
+      "dispatching-parallel-agents",
+      "prompt-engineering-patterns",
+    ])
+      loadSkill(sid, s)
+    loadRead(sid, `${HOME}/.config/opencode/MEMORY.md`)
+    loadRead(sid, `${HOME}/.config/opencode/memory/topics/workflow.md`)
+    loadRead(sid, `${HOME}/.config/opencode/memory/topics/workflow-git-pr.md`)
+  }
+
+  // Structured brief with NO memory-mandate keyword anywhere (all five blocks present,
+  // so the structure check passes and the memory-mandate check is what must fire).
+  const STRUCTURED_NO_MEMORY =
+    "Role: you are a senior Go engineer. Task: fix the race in the ingest loop. " +
+    "Context: the worker pool drops events under load. " +
+    "Constraints: no new dependencies; all tests must pass. " +
+    "Output format: root-cause summary and the diff."
+
+  // Russian-language brief: the memory mandate arrives as «обязательно прочти глобальную
+  // память…» — pins the RU alternation of the memory-mandate regex.
+  const RU_BRIEF =
+    "Role: ты старший Go-инженер. Task: починить гонку в ingest-цикле. " +
+    "Context: пул воркеров теряет события под нагрузкой. " +
+    "Constraints: без новых зависимостей; все тесты должны проходить. " +
+    "Output format: резюме причины и дифф. " +
+    "Перед началом: обязательно прочти глобальную память и перечисли прочитанное в отчёте."
+
+  // --- ext 6.1: memory-mandate keyword on fresh dispatch briefs ---
+  test("fresh structured brief WITHOUT a memory mandate → deny names the missing mandate", async () => {
+    complyAll(E6)
+    const m = await denyMsg({
+      tool: "subagent",
+      sessionID: E6,
+      input: { agent: "code-reviewer", background: true, prompt: STRUCTURED_NO_MEMORY },
+    })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("does not mandate reading global memory")
+    expect(m!).toContain("COMPLIANCE WARNING")
+  })
+
+  test("fresh RU brief mandating «глобальную память» passes the memory-mandate check", async () => {
+    const m = await denyMsg({
+      tool: "subagent",
+      sessionID: E6,
+      input: { agent: "code-reviewer", background: true, prompt: RU_BRIEF },
+    })
+    expect(m).toBeNull()
+  })
+
+  test("continuation dispatch (sessionID present) is exempt from the memory-mandate check", async () => {
+    const m = await denyMsg({
+      tool: "subagent",
+      sessionID: E6,
+      input: { agent: "code-reviewer", background: true, prompt: "please continue", sessionID: "ses_cont61" },
+    })
+    expect(m).toBeNull()
+  })
+
+  test("memory-mandate check runs AFTER the skill gate (zero-state brief → gate message wins)", async () => {
+    const m = await denyMsg({
+      tool: "subagent",
+      sessionID: "sess-ext6-order",
+      input: { agent: "code-reviewer", background: true, prompt: STRUCTURED_NO_MEMORY },
+    })
+    expect(m).not.toBeNull()
+    expect(m!).toContain('skill "brainstorming"')
+    expect(m!).not.toContain("does not mandate reading global memory")
+  })
+
+  // --- ext 6.6: whole-file `write` over an EXISTING global memory file ---
+  test("write over the existing root MEMORY.md (~ form) → memory-overwrite deny", async () => {
+    const m = await denyMsg({ tool: "write", sessionID: E6, input: { path: "~/.config/opencode/MEMORY.md" } })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("whole-file write over an EXISTING global memory file")
+    expect(m!).toContain("COMPLIANCE WARNING")
+  })
+
+  test("write creating a NEW file under memory/topics/ passes (no overwrite)", async () => {
+    const m = await denyMsg({
+      tool: "write",
+      sessionID: E6,
+      input: { path: "~/.config/opencode/memory/topics/zzz-ext6-nonexistent-topic.md" },
+    })
+    expect(m).toBeNull()
+  })
+
+  test("write to a non-memory path passes", async () => {
+    const m = await denyMsg({
+      tool: "write",
+      sessionID: E6,
+      input: { path: "/tmp/opencode/mandator-ext6/ext6-scratch.txt" },
+    })
+    expect(m).toBeNull()
+  })
+
+  test("legacy `filePath` input key with an existing memory path → deny (both keys checked)", async () => {
+    const m = await denyMsg({
+      tool: "write",
+      sessionID: E6,
+      input: { filePath: "~/.config/opencode/memory/topics/workflow.md" },
+    })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("whole-file write over an EXISTING global memory file")
+  })
+
+  test("`path` wins over legacy `filePath` when both are present", async () => {
+    const m = await denyMsg({
+      tool: "write",
+      sessionID: E6,
+      input: {
+        path: "/tmp/opencode/mandator-ext6/ext6-scratch.txt",
+        filePath: `${HOME}/.config/opencode/MEMORY.md`,
+      },
+    })
+    expect(m).toBeNull()
+  })
+
+  test("memory-overwrite check runs AFTER the skill gate (zero-state write → gate message wins)", async () => {
+    const m = await denyMsg({
+      tool: "write",
+      sessionID: "sess-ext6-write0",
+      input: { path: "~/.config/opencode/MEMORY.md" },
+    })
+    expect(m).not.toBeNull()
+    expect(m!).toContain('skill "brainstorming"')
+    expect(m!).not.toContain("whole-file write")
+  })
+
+  // --- ext 6.7: actionable deny for missing/empty agent (bans run before the gate) ---
+  test("dispatch with `agent` missing → actionable deny, not the generic schema error", async () => {
+    const m = await denyMsg({ tool: "subagent", sessionID: "sess-ext6-bans", input: { background: true } })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("missing a specialized agent type")
+    expect(m!).toContain("COMPLIANCE WARNING")
+  })
+
+  test("dispatch with `agent: \"\"` → same actionable deny", async () => {
+    const m = await denyMsg({ tool: "subagent", sessionID: "sess-ext6-bans", input: { agent: "", background: true } })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("missing a specialized agent type")
+  })
+
+  test("dispatch with whitespace-only `agent` → same actionable deny (empty after trim)", async () => {
+    const m = await denyMsg({ tool: "subagent", sessionID: "sess-ext6-bans", input: { agent: "   ", background: true } })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("missing a specialized agent type")
+  })
+
+  test("agent: \"general\" still gets the FORBIDDEN ban message (ban wins over the missing check)", async () => {
+    const m = await denyMsg({
+      tool: "subagent",
+      sessionID: "sess-ext6-bans",
+      input: { agent: "general", background: true },
+    })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("FORBIDDEN")
+    expect(m!).not.toContain("missing a specialized agent type")
   })
 })

@@ -1,4 +1,5 @@
 import { Plugin } from "@opencode/plugin"
+import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
@@ -33,6 +34,18 @@ import path from "node:path"
 //      skill (Role / Task / Context / Constraints / Output format); the three Stitch
 //      free-text prompt tools get a 4-block profile (no Role). Deterministic
 //      keyword-presence check — the honest, checkable subset of "no bad prompts".
+//   9. Memory-mandate keyword (ext 6.1): a fresh dispatch brief must mandate reading
+//      global memory (owner hard dispatch protocol 2026-10-10) — keyword presence of
+//      MEMORY.md / memory/topics / memory/projects / "global memory" / the RU
+//      «глобальная память» forms. Continuations (sessionID) exempt. Runs AFTER the
+//      structure check (ordering: bans → gate → structure → memory-mandate).
+//  10. Memory whole-file overwrite guard (ext 6.6): `write` over an EXISTING file under
+//      ~/.config/opencode/memory/ (incl. the root MEMORY.md) is DENIED — memory is
+//      append-only by anchors, supersede via `edit`; creating NEW memory files passes.
+//      Hygiene backstop, NOT a security boundary: a stat failure allows the call.
+//  11. Agent-missing deny (ext 6.7): dispatches with `agent` missing/empty get an
+//      actionable deny instead of the generic runtime schema error; the "general" ban
+//      still wins for agent === "general".
 //
 // Safety valves:
 //   - OPENCODE_ENFORCE_OFF=1 disables all plugin behavior (checked per hook call).
@@ -177,15 +190,43 @@ function missingBlocks(prompt: string, profile: ReadonlyArray<BlockKey>): string
   return profile.filter((key) => !BLOCKS[key].re.test(prompt)).map((key) => BLOCKS[key].name)
 }
 
+// --- ext 6.1: memory-mandate keyword in fresh dispatch briefs (owner hard dispatch
+// protocol 2026-10-10: every subagent brief must instruct the subagent to read global
+// memory and list what it read). Keyword presence — the same honest subset philosophy
+// as ext 5. Regex per the ext-6 analyst sketch with one deliberate correction: JS `\w`
+// is ASCII-only and cannot carry the Cyrillic tail of «глобальную», so the RU forms
+// would never match; `\p{L}` under the `u` flag is required (pinned by the RU test).
+const MEMORY_MANDATE_RE =
+  /(MEMORY\.md|memory\/(topics|projects)|глобальн\p{L}*\s+пам(ять|яти)|global memory)/iu
+
+// `~` and `~/`-prefixed paths are expanded against the real home directory; both forms
+// occur in real traffic (11 stored ~/ read calls verified in the session DB). Shared by
+// classifyRead (ext 3 recording) and the ext 6.6 write guard.
+function expandTilde(p: string): string {
+  if (p === "~") return os.homedir()
+  if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2))
+  return p
+}
+
 function classifyRead(p: unknown): string | undefined {
   if (typeof p !== "string" || !p) return undefined
-  let s = p
-  if (s === "~") s = os.homedir()
-  else if (s.startsWith("~/")) s = path.join(os.homedir(), s.slice(2))
+  const s = expandTilde(p)
   for (const [target, suffix] of READ_TARGETS) {
     if (s === suffix || s.endsWith("/" + suffix)) return target
   }
   return undefined
+}
+
+// ext 6.6: global memory targets — the memory tree (topics/, projects/) and the root
+// MEMORY.md index. The "/" delimiter after `memory` avoids sibling-dir false positives
+// (e.g. a hypothetical ~/.config/opencode/memory-cache/); the two canonical spellings
+// are matched explicitly and case-sensitively (Linux install).
+function isGlobalMemoryPath(p: string): boolean {
+  return (
+    p.includes(".config/opencode/memory/") ||
+    p.endsWith(".config/opencode/memory") ||
+    p.endsWith(".config/opencode/MEMORY.md")
+  )
 }
 
 // Per-session compliance state; cleared on server restart (fail-closed: sessions
@@ -248,6 +289,32 @@ const DENY_BACKGROUND =
   "dispatch. Re-dispatch the SAME call with background:true." +
   COMPLIANCE_WARNING
 
+// ext 6.7: actionable deny for missing/empty agent (runtime would only produce the
+// generic schema error "Invalid arguments … agent: Missing key" — no policy guidance).
+const DENY_AGENT_MISSING =
+  "DENIED by dispatch-policy plugin: the dispatch is missing a specialized agent type " +
+  "(agent missing or empty). Pick a specialized agent type — e.g. backend-architect, " +
+  "code-reviewer, frontend-developer, trend-researcher (full list: opencode debug agents) — " +
+  "then re-run this exact call." +
+  COMPLIANCE_WARNING
+
+// ext 6.1: fresh dispatch brief never instructs the subagent to read global memory.
+const DENY_MEMORY_MANDATE =
+  "DENIED by dispatch-policy plugin: the dispatch brief does not mandate reading global memory " +
+  "(owner hard dispatch protocol: every subagent brief must instruct the subagent to read " +
+  "~/.config/opencode/MEMORY.md + memory/topics/* + memory/projects/* and list what it read " +
+  "in its report). Add the memory mandate to the brief, then re-run this exact call." +
+  COMPLIANCE_WARNING
+
+// ext 6.6: whole-file `write` over an existing global memory file (last-writer-wins
+// rewrites destroyed memory entries in the 2026-10-09/10 incidents).
+const DENY_MEMORY_OVERWRITE =
+  "DENIED by dispatch-policy plugin: whole-file write over an EXISTING global memory file is " +
+  "forbidden — whole-file rewrites of memory race concurrent agents (2026-10-09/10 incidents). " +
+  "Append or supersede the entry via the `edit` tool instead (append-only by anchors; " +
+  "supersede-in-place, never full-file write). Creating a NEW memory file is allowed." +
+  COMPLIANCE_WARNING
+
 function denyStructure(target: string, missing: string[], profile: ReadonlyArray<BlockKey>): string {
   const guide = profile.map((key) => BLOCKS[key].name).join(" / ")
   return (
@@ -274,6 +341,10 @@ export default Plugin.define({
       if (enforcementDisabled()) return
       const input = (event.input ?? {}) as Record<string, unknown>
       if (DISPATCH_TOOLS.has(event.tool)) {
+        // ext 6.7: actionable deny for missing/empty agent, BEFORE the general ban —
+        // the message teaches agent selection. "general" is a non-empty string, so the
+        // ban below still wins for agent === "general".
+        if (typeof input.agent !== "string" || input.agent.trim() === "") throw new Error(DENY_AGENT_MISSING)
         if (input.agent === FORBIDDEN_AGENT) throw new Error(DENY_GENERAL)
         if (input.background !== true) throw new Error(DENY_BACKGROUND)
       }
@@ -303,6 +374,11 @@ export default Plugin.define({
             const prefix = prompt === "" ? "The dispatch prompt is missing or empty. " : ""
             throw new Error(prefix + denyStructure("subagent dispatch", missing, SUBAGENT_PROFILE))
           }
+          // ext 6.1: fresh briefs must mandate reading global memory — AFTER the
+          // structure check (ordering: bans → skill/memory gate → structure →
+          // memory-mandate). Continuations (sessionID present) are exempt: the original
+          // dispatch already passed.
+          if (!MEMORY_MANDATE_RE.test(prompt)) throw new Error(DENY_MEMORY_MANDATE)
         }
       } else if (STITCH_PROMPT_TOOLS.has(event.tool)) {
         const prompt = typeof input.prompt === "string" ? input.prompt : ""
@@ -310,6 +386,31 @@ export default Plugin.define({
           const missing = missingBlocks(prompt, STITCH_PROFILE)
           if (missing.length > 0) {
             throw new Error(denyStructure(`MCP tool "${event.tool}"`, missing, STITCH_PROFILE))
+          }
+        }
+      } else if (event.tool === "write") {
+        // ext 6.6: whole-file `write` over an EXISTING global memory file (incl. the
+        // root MEMORY.md) is denied — memory is append-only by anchors, supersede via
+        // `edit`; creating NEW memory files passes. Runs after the skill gate (the gate
+        // already covers `write`). Runtime `write` input key is `path`; legacy stored
+        // calls used `filePath` — check BOTH, prefer `path`. Hygiene backstop, not a
+        // security boundary: a stat failure ALLOWS the call.
+        const raw =
+          typeof input.path === "string" && input.path !== ""
+            ? input.path
+            : typeof input.filePath === "string"
+              ? input.filePath
+              : undefined
+        if (raw !== undefined) {
+          const p = expandTilde(raw)
+          if (isGlobalMemoryPath(p)) {
+            let exists = false
+            try {
+              exists = fs.existsSync(p)
+            } catch {
+              exists = false // stat failure → allow (documented fail-open hygiene backstop)
+            }
+            if (exists) throw new Error(DENY_MEMORY_OVERWRITE)
           }
         }
       }
