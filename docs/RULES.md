@@ -32,6 +32,9 @@ non-exa MCP tools.
 | 3 | `subagent` with `agent: "general"` | Never allowed, any state |
 | 4 | `subagent` without `background: true` | Never allowed, any state (strict: `false` **and** omitted both deny) |
 | 5 | Fresh `subagent` dispatch / long Stitch prompt | The free-text `prompt` must contain the structural blocks — see "Prompt-structure gate" below |
+| 6 | Fresh `subagent` dispatch (additionally) | The brief must **mandate reading global memory** — keyword presence: `MEMORY.md`, `memory/topics`, `memory/projects`, "global memory", or the RU «глобальная память» forms — see "ext 6 wave" below |
+| 7 | `write` to an existing global memory file | Never allowed, any state — append/supersede via `edit`; creating a NEW memory file passes |
+| 8 | `subagent` with `agent` missing/empty | Never allowed, any state (actionable deny; `agent: "general"` still gets the row-3 ban message) |
 
 Rationale (owner decision 2026-10-24): **prompt-engineering-patterns** is mandated on the
 dispatch path because dispatch briefs (subagent prompts) and agent-MCP prompts are prompts —
@@ -63,8 +66,9 @@ Exemptions (by design — don't block commands where free text cannot or should 
   lives in the session DB); no live Stitch calls existed at implementation time — a rename
   would silently disable the check (same degradation as the tool-description hint).
 
-Ordering: bans → skill/memory gate → structure check (compliance first: load the skill,
-then the brief is validated).
+Ordering: bans (incl. rows 3, 4, 8) → skill/memory gate → structure check → memory-mandate
+check (fresh dispatches; compliance first: load the skill, then the brief is validated,
+then its memory mandate is verified).
 
 Recording rules (what counts as compliance):
 
@@ -74,12 +78,45 @@ Recording rules (what counts as compliance):
 - State is **per-session** (`Map<sessionID, …>`): a second session stays fully gated.
 - State clears on server restart **and** on every plugin hot-reload (fail-closed by design).
 
+### ext 6 wave (owner decisions 2026-10-25; spec source: the ext-6 analyst report, 2026-10-25)
+
+Wave 1 shipped three deterministic layers; the rest of the analyst proposals are tracked in
+[`docs/BACKLOG.md`](BACKLOG.md) (6.2 audit log, 6.3 continuation-chain cap, 6.4
+identical-dispatch breaker, 6.5 shell guards — the pkill/killall slice moved to native
+`opencode.json` V2 permission rules, owner decision 2026-10-25).
+
+**Memory-mandate keyword (6.1).** A fresh dispatch brief (`sessionID` absent) must contain a
+memory-reading mandate — keyword presence, case-insensitive:
+`/(MEMORY\.md|memory\/(topics|projects)|глобальн\p{L}*\s+пам(ять|яти)|global memory)/iu`.
+Continuations are exempt (the original dispatch already passed). The check runs after the
+structure check, so ordering is preserved. Mechanical enforcement of the owner hard dispatch
+protocol of 2026-10-10; the analyst grounding measured 8.5% of post-plugin fresh briefs
+violating it. Delta vs the analyst sketch, deliberate: the sketch's `\w` is ASCII-only in JS
+and cannot match the Cyrillic tail of «глобальную» — `\p{L}` under the `u` flag is required
+(pinned by a test).
+
+**Memory whole-file overwrite guard (6.6).** A `write` whose target resolves (after
+`~`-expansion, shared `expandTilde` helper) under the global memory tree
+(`.config/opencode/memory/`, incl. the root `MEMORY.md`) **and** whose file already exists
+(`fs.existsSync`) is denied: whole-file rewrites of memory race concurrent agents — the
+mechanism behind the 2026-10-09/10 incidents. Creating a NEW memory file passes; `edit` is
+untouched by design (append/supersede-in-place is the sanctioned path). The runtime `write`
+input key is `path`; legacy stored calls used `filePath` — both are checked, `path` preferred.
+Honest failure mode: a stat failure **allows** the call — this layer is a hygiene backstop,
+not a security boundary (grounding: zero post-plugin memory writes).
+
+**Agent-missing deny (6.7).** A dispatch with `agent` missing, empty, or whitespace-only gets
+an actionable deny instead of the runtime's generic schema error (`Invalid arguments … agent:
+Missing key`). The check sits before the `general` ban, but `agent: "general"` is a non-empty
+string, so the ban message still wins for that value. Message-quality layer: the runtime
+already blocks the missing-key subclass.
+
 ## 3. Deny messages
 
 Deny messages list **exactly what is missing** (dynamic), then the comply-then-rerun
 instruction, then the shared **COMPLIANCE WARNING** trailer (below). The ban messages
-(rows 3–4 above) are checked **before** the skill gate — an absolute ban wins over the
-procedural one.
+(rows 3–4 and 8 above) are checked **before** the skill gate — an absolute ban wins over
+the procedural one.
 
 | :-- | Trigger | Deny message (verbatim) |
 | :-- | :-- | :-- |
@@ -87,8 +124,11 @@ procedural one.
 | 2 | `background !== true` | `DENIED by dispatch-policy plugin: owner mandate requires background:true on every subagent dispatch. Re-dispatch the SAME call with background:true.` + trailer |
 | 3 | Gated call, missing items | `Owner mandate: this action requires, in this session first: <missing items joined by "; ">. Load skills via the `skill` tool (one call per skill); read memory files with the `read` tool. Then re-run this exact call.` + trailer |
 | 4 | Structure check failed (§2 ext 5) | `DENIED by dispatch-policy plugin: prompt-structure check (per the prompt-engineering-patterns skill) on the <target> prompt failed. Missing required block(s): <names joined by "; ">. Structure the prompt with explicit blocks: <profile blocks joined by " / ">. Then re-run this exact call.` + trailer. `<target>` is `subagent dispatch` or `MCP tool "<name>"`; an absent/empty dispatch prompt prepends `The dispatch prompt is missing or empty. ` |
+| 5 | Fresh brief without a memory mandate (§2 row 6) | `DENIED by dispatch-policy plugin: the dispatch brief does not mandate reading global memory (owner hard dispatch protocol: every subagent brief must instruct the subagent to read ~/.config/opencode/MEMORY.md + memory/topics/* + memory/projects/* and list what it read in its report). Add the memory mandate to the brief, then re-run this exact call.` + trailer |
+| 6 | `write` over an existing global memory file (§2 row 7) | `DENIED by dispatch-policy plugin: whole-file write over an EXISTING global memory file is forbidden — whole-file rewrites of memory race concurrent agents (2026-10-09/10 incidents). Append or supersede the entry via the `edit` tool instead (append-only by anchors; supersede-in-place, never full-file write). Creating a NEW memory file is allowed.` + trailer |
+| 7 | `agent` missing/empty (§2 row 8) | `DENIED by dispatch-policy plugin: the dispatch is missing a specialized agent type (agent missing or empty). Pick a specialized agent type — e.g. backend-architect, code-reviewer, frontend-developer, trend-researcher (full list: opencode debug agents) — then re-run this exact call.` + trailer |
 
-Shared trailer (verbatim, appended to all three):
+Shared trailer (verbatim, appended to every deny message):
 
 ```
  COMPLIANCE WARNING: all output is audited against the requirements of the skills applied in this session — work that violates them is REJECTED and must be redone. This explicitly covers dispatches: a subagent sent with a poorly written brief (violating prompt-engineering requirements — vague task, missing context/constraints, no report contract) will be REJECTED and must be re-dispatched.

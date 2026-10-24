@@ -22,7 +22,7 @@
 
 ## 📖 What is enforced
 
-Six deterministic layers, enforced in-process by an OpenCode v2 plugin
+Nine deterministic layers, enforced in-process by an OpenCode v2 plugin
 (`@opencode/plugin` `Plugin.define`). Full normative spec: [`docs/RULES.md`](docs/RULES.md).
 
 | :-- | # | Rule | Scope |
@@ -33,6 +33,9 @@ Six deterministic layers, enforced in-process by an OpenCode v2 plugin
 | :-- | 4 | **Memory gate**: …and read `~/.config/opencode/MEMORY.md`; dispatches additionally need `subagent-driven-development` + `dispatching-parallel-agents` + `prompt-engineering-patterns` + reads of `memory/topics/workflow.md` + `workflow-git-pr.md` | same gated set (+ orchestrator preflight on `subagent`) |
 | :-- | 5 | **PRIMER** injected as a system text part before every model request + one-line policy hint on the `subagent` tool description | every agent request / tool selection |
 | :-- | 6 | **Prompt-structure gate**: a fresh dispatch brief must contain Role / Task / Context / Constraints / Output format (per `prompt-engineering-patterns`); the 3 Stitch free-text prompt tools need a 4-block profile on prompts ≥ 120 chars | `subagent` (fresh) + `stitch_generate_screen_from_text` / `stitch_edit_screens` / `stitch_generate_variants` |
+| :-- | 7 | **Memory-mandate keyword** (ext 6.1): a fresh dispatch brief must mandate reading global memory (`MEMORY.md` / `memory/topics` / `memory/projects` / "global memory" / RU «глобальная память» forms) | `subagent` (fresh; continuations exempt) |
+| :-- | 8 | **Memory whole-file overwrite guard** (ext 6.6): `write` over an EXISTING global memory file (memory tree incl. root `MEMORY.md`) is denied — append/supersede via `edit`; creating NEW memory files passes; stat failures allow (hygiene backstop) | `write` |
+| :-- | 9 | **Agent-missing deny** (ext 6.7): dispatches with `agent` missing/empty get an actionable deny; the `general` ban still wins for `agent: "general"` | `subagent`, any session state |
 
 Deny messages list **exactly what is missing**, then the comply-then-rerun instruction,
 then a **COMPLIANCE WARNING** trailer: output violating the applied skills' requirements —
@@ -74,13 +77,16 @@ flowchart TD
 
 **Request-flow 2 — orchestrator preflight (a `subagent` dispatch):**
 
-1. Ban checks first: `agent: "general"` → deny; `background !== true` → deny.
+1. Ban checks first: `agent` missing/empty → deny (ext 6.7); `agent: "general"` → deny;
+   `background !== true` → deny.
 2. Base gate: 3 skills + `MEMORY.md` read must already be in session state.
 3. Dispatch gate: + `subagent-driven-development`, `dispatching-parallel-agents`,
    `prompt-engineering-patterns`, `workflow.md`, `workflow-git-pr.md` reads.
 4. Prompt-structure check on the brief: Role / Task / Context / Constraints /
    Output format must all be present (continuations with `sessionID` exempt).
-5. All present → dispatch proceeds; anything missing → one exact-missing deny.
+5. Memory-mandate check on fresh briefs: the brief must mandate reading global memory
+   (ext 6.1; continuations exempt).
+6. All present → dispatch proceeds; anything missing → one exact-missing deny.
 
 ## 📂 Project Structure
 
