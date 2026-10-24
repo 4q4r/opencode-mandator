@@ -28,9 +28,13 @@ non-exa MCP tools.
 | :-- | Action | Prerequisites (all required, per session) |
 | :-- | :-- | :-- |
 | 1 | Any gated tool call | `skill` invoked for **brainstorming**, **grilling**, **build-with-exa** + a completed `read` of `~/.config/opencode/MEMORY.md` |
-| 2 | `subagent` dispatch (additionally) | `skill` for **subagent-driven-development** + **dispatching-parallel-agents** + completed reads of `~/.config/opencode/memory/topics/workflow.md` **and** `workflow-git-pr.md` |
+| 2 | `subagent` dispatch (additionally) | `skill` for **subagent-driven-development** + **dispatching-parallel-agents** + **prompt-engineering-patterns** + completed reads of `~/.config/opencode/memory/topics/workflow.md` **and** `workflow-git-pr.md` |
 | 3 | `subagent` with `agent: "general"` | Never allowed, any state |
 | 4 | `subagent` without `background: true` | Never allowed, any state (strict: `false` **and** omitted both deny) |
+
+Rationale (owner decision 2026-10-24): **prompt-engineering-patterns** is mandated on the
+dispatch path because dispatch briefs (subagent prompts) and agent-MCP prompts are prompts —
+the orchestrator must apply prompt-engineering patterns when writing them.
 
 Recording rules (what counts as compliance):
 
@@ -43,18 +47,30 @@ Recording rules (what counts as compliance):
 ## 3. Deny messages
 
 Deny messages list **exactly what is missing** (dynamic), then the comply-then-rerun
-instruction. The ban messages (rows 3–4 above) are checked **before** the skill gate —
-an absolute ban wins over the procedural one.
+instruction, then the shared **COMPLIANCE WARNING** trailer (below). The ban messages
+(rows 3–4 above) are checked **before** the skill gate — an absolute ban wins over the
+procedural one.
 
 | :-- | Trigger | Deny message (verbatim) |
 | :-- | :-- | :-- |
-| 1 | `agent: "general"` | `DENIED by dispatch-policy plugin: agent type "general" is FORBIDDEN by owner mandate. Re-dispatch with a specialized agent type — e.g. code-reviewer, backend-architect, frontend-developer, trend-researcher (full list: opencode debug agents).` |
-| 2 | `background !== true` | `DENIED by dispatch-policy plugin: owner mandate requires background:true on every subagent dispatch. Re-dispatch the SAME call with background:true.` |
-| 3 | Gated call, missing items | `Owner mandate: this action requires, in this session first: <missing items joined by "; ">. Load skills via the `skill` tool (one call per skill); read memory files with the `read` tool. Then re-run this exact call.` |
+| 1 | `agent: "general"` | `DENIED by dispatch-policy plugin: agent type "general" is FORBIDDEN by owner mandate. Re-dispatch with a specialized agent type — e.g. code-reviewer, backend-architect, frontend-developer, trend-researcher (full list: opencode debug agents).` + trailer |
+| 2 | `background !== true` | `DENIED by dispatch-policy plugin: owner mandate requires background:true on every subagent dispatch. Re-dispatch the SAME call with background:true.` + trailer |
+| 3 | Gated call, missing items | `Owner mandate: this action requires, in this session first: <missing items joined by "; ">. Load skills via the `skill` tool (one call per skill); read memory files with the `read` tool. Then re-run this exact call.` + trailer |
+
+Shared trailer (verbatim, appended to all three):
+
+```
+ COMPLIANCE WARNING: all output is audited against the requirements of the skills applied in this session — work that violates them is REJECTED and must be redone. This explicitly covers dispatches: a subagent sent with a poorly written brief (violating prompt-engineering requirements — vague task, missing context/constraints, no report contract) will be REJECTED and must be re-dispatched.
+```
+
+The trailer is a **declarative deterrent**: no hook in the plugin audits model output
+against skill requirements — nothing tracks compliance beyond skill-load/read recording
+above. It exists by owner decision to bias models toward actually following the loaded
+skills' requirements; the plugin's deterministic checks are exactly the ones in this spec.
 
 Missing-item format: `skill "<id>"` and `read of <path>` — e.g. at zero state a
 `shell` call lists the 3 skills + the MEMORY.md read and **not** the orchestrator
-items; at base-complete a `subagent` call lists only the 2 orchestrator skills + 2
+items; at base-complete a `subagent` call lists only the 3 orchestrator skills + 2
 workflow reads.
 
 ## 4. Passive layers

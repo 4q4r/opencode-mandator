@@ -2,7 +2,7 @@ import { Plugin } from "@opencode/plugin"
 import os from "node:os"
 import path from "node:path"
 
-// OpenCode V2 enforcement plugin — wave3-a2 + gate extensions 1-3 (owner decisions).
+// OpenCode V2 enforcement plugin — wave3-a2 + gate extensions 1-3 + ext 4 (owner decisions).
 // Deterministic enforcement of owner dispatch policy; the model cannot forget these.
 //
 // Layers:
@@ -19,8 +19,15 @@ import path from "node:path"
 //   6. Memory-read prerequisite + orchestrator preflight (ext 3): every gated call
 //      additionally requires a completed `read` of ~/.config/opencode/MEMORY.md in
 //      this session; subagent dispatches additionally require skills
-//      subagent-driven-development + dispatching-parallel-agents and reads of
-//      memory/topics/workflow.md + workflow-git-pr.md. Deny lists exactly what is missing.
+//      subagent-driven-development + dispatching-parallel-agents +
+//      prompt-engineering-patterns (ext 4: dispatch briefs and agent-MCP prompts are
+//      prompts) and reads of memory/topics/workflow.md + workflow-git-pr.md. Deny
+//      lists exactly what is missing.
+//   7. Compliance warning (ext 4): every deny message ends with a declarative
+//      warning that output violating the applied skills' requirements is REJECTED,
+//      including subagents dispatched with a poorly written brief. This is a
+//      deterrent by owner decision — NOT mechanically verified anywhere in this
+//      plugin (documented honestly in docs/RULES.md §3).
 //
 // Safety valves:
 //   - OPENCODE_ENFORCE_OFF=1 disables all plugin behavior (checked per hook call).
@@ -51,7 +58,7 @@ const PRIMER = `[auto-injected operating rules — non-negotiable]
 - Estimates (time/cost/points) only on explicit request. Chat with owner: Russian. Code/reports: English.
 - External facts via Exa; every screenshot/visual → Z.AI Vision MCP; fail loudly — never fake success paths.
 - [skill gate] This session's plugin ENFORCES the skill mandate: edit/write/bash/subagent-dispatch/web/execute calls are DENIED until \`skill\` has been invoked for brainstorming, grilling, and build-with-exa in this session. If denied: invoke the three skills, then re-run your call unchanged.
-- [skill gate: memory + orchestrator] Every gated call additionally requires a \`read\` of ~/.config/opencode/MEMORY.md in this session; before dispatching ANY subagent, the session must ALSO have loaded skills \`subagent-driven-development\` + \`dispatching-parallel-agents\` and read ~/.config/opencode/memory/topics/workflow.md + workflow-git-pr.md. Deny messages list exactly what is missing — comply, then re-run your call unchanged.`
+- [skill gate: memory + orchestrator] Every gated call additionally requires a \`read\` of ~/.config/opencode/MEMORY.md in this session; before dispatching ANY subagent, the session must ALSO have loaded skills \`subagent-driven-development\` + \`dispatching-parallel-agents\` + \`prompt-engineering-patterns\` and read ~/.config/opencode/memory/topics/workflow.md + workflow-git-pr.md. Deny messages list exactly what is missing — comply, then re-run your call unchanged.`
 
 const DISPATCH_TOOLS = new Set(["subagent"])
 const FORBIDDEN_AGENT = "general"
@@ -84,8 +91,16 @@ const MANDATORY_SKILLS = ["brainstorming", "grilling", "build-with-exa"] as cons
 // --- Gate extension 3: memory-read verification + orchestrator dispatch preflight ---
 // Base gate prerequisite: root MEMORY.md read in this session (owner-accepted proxy
 // for "memory consulted"). Dispatch gate (subagent only) additionally requires the
-// two orchestrator skills and reads of both workflow memory files.
-const ORCHESTRATOR_SKILLS = ["subagent-driven-development", "dispatching-parallel-agents"] as const
+// orchestrator skills and reads of both workflow memory files.
+//
+// prompt-engineering-patterns (ext 4, owner decision 2026-10-24): dispatch briefs
+// (subagent prompts) and agent-MCP prompts are prompts — the orchestrator must apply
+// prompt-engineering patterns when writing them.
+const ORCHESTRATOR_SKILLS = [
+  "subagent-driven-development",
+  "dispatching-parallel-agents",
+  "prompt-engineering-patterns",
+] as const
 
 // Read targets are matched by suffix after ~-expansion; both absolute and ~ forms
 // occur in real read calls (11 stored ~/ calls verified in the session DB).
@@ -144,14 +159,28 @@ function gateMissing(sessionID: string, dispatch: boolean): string[] {
   return missing
 }
 
+// Declarative compliance warning (ext 4, owner decision — "пугалка"): appended to
+// every deny message. It claims output is audited and skill violations — including
+// badly written subagent briefs — are REJECTED. NO hook in this plugin performs that
+// audit; the warning is a behavioral deterrent only (the owner accepts the mismatch;
+// docs/RULES.md §3 documents it honestly). Owner rationale: models that believe
+// non-compliance is caught comply with the loaded skills' requirements more readily.
+const COMPLIANCE_WARNING =
+  " COMPLIANCE WARNING: all output is audited against the requirements of the skills applied in this " +
+  "session — work that violates them is REJECTED and must be redone. This explicitly covers dispatches: " +
+  "a subagent sent with a poorly written brief (violating prompt-engineering requirements — vague task, " +
+  "missing context/constraints, no report contract) will be REJECTED and must be re-dispatched."
+
 const DENY_GENERAL =
   'DENIED by dispatch-policy plugin: agent type "general" is FORBIDDEN by owner mandate. ' +
   "Re-dispatch with a specialized agent type — e.g. code-reviewer, backend-architect, " +
-  "frontend-developer, trend-researcher (full list: opencode debug agents)."
+  "frontend-developer, trend-researcher (full list: opencode debug agents)." +
+  COMPLIANCE_WARNING
 
 const DENY_BACKGROUND =
   "DENIED by dispatch-policy plugin: owner mandate requires background:true on every subagent " +
-  "dispatch. Re-dispatch the SAME call with background:true."
+  "dispatch. Re-dispatch the SAME call with background:true." +
+  COMPLIANCE_WARNING
 
 const DESCRIPTION_HINT =
   "\n\nPOLICY (enforced by the dispatch-policy plugin): every dispatch MUST pass " +
@@ -181,7 +210,8 @@ export default Plugin.define({
           throw new Error(
             "Owner mandate: this action requires, in this session first: " +
               missing.join("; ") +
-              ". Load skills via the `skill` tool (one call per skill); read memory files with the `read` tool. Then re-run this exact call.",
+              ". Load skills via the `skill` tool (one call per skill); read memory files with the `read` tool. Then re-run this exact call." +
+              COMPLIANCE_WARNING,
           )
         }
       }
