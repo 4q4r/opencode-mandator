@@ -5,7 +5,7 @@ ext-6.1 (memory-mandate keyword), ext-6.6 (memory whole-file overwrite guard), a
 (agent-missing deny) — see `docs/RULES.md` §2 "ext 6 wave". The remaining proposals live here
 with their owner-decided status. Full specs: the analyst report §ext-6.2–6.5.
 
-| :-- | Layer | Priority | Status |
+| # | Layer | Priority | Status |
 | :-- | :-- | :-- | :-- |
 | 1 | ext-6.2 structured deny/dispatch audit log | P1 | Backlogged by owner 2026-10-25 |
 | 2 | ext-6.3 continuation-chain cap (>6) | P2 | BLOCKED ON DESIGN |
@@ -15,11 +15,14 @@ with their owner-decided status. Full specs: the analyst report §ext-6.2–6.5.
 ## ext-6.2 — Structured deny/dispatch audit log (P1, backlogged by owner 2026-10-25)
 
 Spec = analyst report §ext-6.2: wrap every deny throw site in a `deny()` helper that appends
-one JSONL line `{ts, sessionID, tool, rule, detail}` to `~/.local/state/opencode-mandator/`,
-plus optional completed-dispatch metadata (`{agent, model, background, continuation}`).
-Critical safety property: logging failures are swallow-and-allow — the log is observability,
-never a gate; gate paths keep their exact ordering. Motivation: 134 deny events in 10 days are
-today visible only via fuzzy LIKE forensics over a 5.9 GB database.
+one JSONL line `{ts, sessionID, tool, rule, msg}` to the daily audit file
+`~/.local/state/opencode-mandator/deny-YYYYMMDD.jsonl`, plus optional completed-dispatch
+metadata (`{agent, model, background, continuation}`).
+Critical safety property: ONLY the logging exception is swallowed — the original deny decision
+is always enforced. Fail-open applies solely to the log write itself, an owner-approved
+exception for a layer that is observability, not a gate; gate paths keep their exact ordering.
+Motivation: 134 deny events in 10 days are today visible only via fuzzy LIKE forensics over a
+5.9 GB database.
 
 ## ext-6.3 — Continuation-chain cap (BLOCKED ON DESIGN)
 
