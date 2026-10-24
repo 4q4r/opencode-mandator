@@ -2,7 +2,7 @@ import { Plugin } from "@opencode/plugin"
 import os from "node:os"
 import path from "node:path"
 
-// OpenCode V2 enforcement plugin — wave3-a2 + gate extensions 1-3 + ext 4 (owner decisions).
+// OpenCode V2 enforcement plugin — wave3-a2 + gate extensions 1-5 (owner decisions).
 // Deterministic enforcement of owner dispatch policy; the model cannot forget these.
 //
 // Layers:
@@ -28,6 +28,11 @@ import path from "node:path"
 //      including subagents dispatched with a poorly written brief. This is a
 //      deterrent by owner decision — NOT mechanically verified anywhere in this
 //      plugin (documented honestly in docs/RULES.md §3).
+//   8. Prompt-structure gate (ext 5): the free-text `prompt` of a subagent dispatch
+//      must contain the structural blocks mandated by the prompt-engineering-patterns
+//      skill (Role / Task / Context / Constraints / Output format); the three Stitch
+//      free-text prompt tools get a 4-block profile (no Role). Deterministic
+//      keyword-presence check — the honest, checkable subset of "no bad prompts".
 //
 // Safety valves:
 //   - OPENCODE_ENFORCE_OFF=1 disables all plugin behavior (checked per hook call).
@@ -42,8 +47,15 @@ import path from "node:path"
 //   - Deny-by-throw: core/src/plugin/hooks.ts — "Only tool execute.before may fail:
 //     a Tool.Error rejects the call before it runs"; ToolFailures["execute.before"] = Tool.Error.
 //   - Dispatch tool is named "subagent" on v2.0.27 (legacy "task" retired 2026-09-16).
-//   - Dispatch args {agent, background}; skill arg {id}; read arg {path} (session DB).
+//   - Dispatch args {agent, background, prompt, sessionID?}; skill arg {id}; read arg
+//     {path} (session DB).
 //   - read inputs occur in both absolute and ~/ forms (11 stored ~/ calls).
+//   - MCP tools appear under flat "<server>_<tool>" names in execute hooks
+//     (verified live in the session DB: exa_web_search_exa, exa_web_fetch_exa), so
+//     Stitch tools are stitch_<name>. No live Stitch calls exist yet on this install;
+//     names are from the MCP catalog + this convention. If the runtime renames them,
+//     the structure check silently never fires (same documented degradation as the
+//     tool-description hint for renamed tools).
 
 // PRIMER — owner-approved policy wording, injected VERBATIM (wave3-a2 brief).
 const PRIMER = `[auto-injected operating rules — non-negotiable]
@@ -110,6 +122,60 @@ const READ_TARGETS: ReadonlyArray<[string, string]> = [
   ["workflow", ".config/opencode/memory/topics/workflow.md"],
   ["workflow-git-pr", ".config/opencode/memory/topics/workflow-git-pr.md"],
 ]
+
+// --- Gate extension 5: deterministic prompt-structure check (owner decision) ---
+// Source of truth: the prompt-engineering-patterns skill — references/system-prompts.md
+// ("Effective System Prompt Structure": [Role Definition] + [Expertise Areas] +
+// [Behavioral Guidelines] + [Output Format] + [Constraints]) and the template library
+// (every generation template carries Task / Context / Requirements / Constraints /
+// Output). The check is keyword-presence per block, tolerant to header forms
+// ("## Task", "**Task:**", "Task:") and to Russian block names; it is the honest,
+// deterministic subset of "no bad prompts" — it cannot judge content quality, only
+// structure (the COMPLIANCE WARNING covers the rest).
+type BlockKey = "role" | "task" | "context" | "constraints" | "output"
+const BLOCKS: Record<BlockKey, { name: string; re: RegExp }> = {
+  role: { name: "Role", re: /(you are|your role|role\s*:|acting as|роль\s*:)/i },
+  task: { name: "Task", re: /(tasks?\b|objectives?\b|goals?\b|mission\b|задач|цель)/i },
+  context: { name: "Context", re: /(contexts?\b|background\b|контекст)/i },
+  constraints: {
+    name: "Constraints",
+    re: /(constraints?\b|requirements?\b|guidelines?\b|rules?\b|\bmust\b|do not|don't|avoid|never|forbidden|требован|ограничен|правил|запрещ)/i,
+  },
+  output: {
+    name: "Output format",
+    re: /(output format|response format|expected output|deliverable|reports?\b|formats?\b|includes?\b|отч[её]т|формат)/i,
+  },
+}
+// Subagent brief: all five blocks (a full prompt to an LLM agent).
+const SUBAGENT_PROFILE: ReadonlyArray<BlockKey> = ["role", "task", "context", "constraints", "output"]
+// Stitch generation prompts: four blocks — no Role (the tool's role is fixed by the
+// design tool itself; forcing "You are..." into a screen prompt would be artificial).
+const STITCH_PROFILE: ReadonlyArray<BlockKey> = ["task", "context", "constraints", "output"]
+// Free-text `prompt: string` (Required) inputs, verified in the Stitch MCP catalog:
+//   stitch_generate_screen_from_text — "The input text to generate the screen from"
+//   stitch_edit_screens              — "The input text to generate the screen from"
+//   stitch_generate_variants         — "The input text used to generate the variants"
+// Other Stitch surfaces are deliberately exempt (owner decision — "don't block
+// commands where arbitrary text cannot be entered"):
+//   - IDs/enums/flags tools (get_project, list_*, download_file, apply_design_system, …);
+//   - create_project.title (a short label, not a prompt);
+//   - designMd / styleGuidelines on create/update_design_system (design-spec genre —
+//     a token/style document, not a task prompt; the block profile does not fit);
+//   - upload_design_md (base64 file upload).
+const STITCH_PROMPT_TOOLS = new Set([
+  "stitch_generate_screen_from_text",
+  "stitch_edit_screens",
+  "stitch_generate_variants",
+])
+// Short prompts pass the structure check: the Stitch tools themselves recommend
+// re-calling with an accepted suggestion verbatim (e.g. "Yes, make them all") —
+// tactical follow-ups must keep flowing. A structured generation brief is
+// naturally longer than this floor.
+const STITCH_MIN_PROMPT = 120
+
+function missingBlocks(prompt: string, profile: ReadonlyArray<BlockKey>): string[] {
+  return profile.filter((key) => !BLOCKS[key].re.test(prompt)).map((key) => BLOCKS[key].name)
+}
 
 function classifyRead(p: unknown): string | undefined {
   if (typeof p !== "string" || !p) return undefined
@@ -182,6 +248,16 @@ const DENY_BACKGROUND =
   "dispatch. Re-dispatch the SAME call with background:true." +
   COMPLIANCE_WARNING
 
+function denyStructure(target: string, missing: string[], profile: ReadonlyArray<BlockKey>): string {
+  const guide = profile.map((key) => BLOCKS[key].name).join(" / ")
+  return (
+    `DENIED by dispatch-policy plugin: prompt-structure check (per the prompt-engineering-patterns ` +
+    `skill) on the ${target} prompt failed. Missing required block(s): ${missing.join("; ")}. ` +
+    `Structure the prompt with explicit blocks: ${guide}. Then re-run this exact call.` +
+    COMPLIANCE_WARNING
+  )
+}
+
 const DESCRIPTION_HINT =
   "\n\nPOLICY (enforced by the dispatch-policy plugin): every dispatch MUST pass " +
   'background:true; agent type "general" is FORBIDDEN — pick a specialized agent type.'
@@ -196,8 +272,8 @@ export default Plugin.define({
     // Layers 1+2: intercept subagent dispatches before execution.
     await ctx.tool.hook("execute.before", (event) => {
       if (enforcementDisabled()) return
+      const input = (event.input ?? {}) as Record<string, unknown>
       if (DISPATCH_TOOLS.has(event.tool)) {
-        const input = (event.input ?? {}) as Record<string, unknown>
         if (input.agent === FORBIDDEN_AGENT) throw new Error(DENY_GENERAL)
         if (input.background !== true) throw new Error(DENY_BACKGROUND)
       }
@@ -213,6 +289,28 @@ export default Plugin.define({
               ". Load skills via the `skill` tool (one call per skill); read memory files with the `read` tool. Then re-run this exact call." +
               COMPLIANCE_WARNING,
           )
+        }
+      }
+      // Ext 5: prompt-structure gate — AFTER the skill gate (compliance first: the
+      // orchestrator loads prompt-engineering-patterns, THEN the brief is checked).
+      // Subagent: every fresh dispatch must carry a structured brief; continuations
+      // (sessionID present) are exempt — the original dispatch already passed.
+      if (DISPATCH_TOOLS.has(event.tool)) {
+        if (input.sessionID === undefined) {
+          const prompt = typeof input.prompt === "string" ? input.prompt : ""
+          const missing = missingBlocks(prompt, SUBAGENT_PROFILE)
+          if (missing.length > 0) {
+            const prefix = prompt === "" ? "The dispatch prompt is missing or empty. " : ""
+            throw new Error(prefix + denyStructure("subagent dispatch", missing, SUBAGENT_PROFILE))
+          }
+        }
+      } else if (STITCH_PROMPT_TOOLS.has(event.tool)) {
+        const prompt = typeof input.prompt === "string" ? input.prompt : ""
+        if (prompt.length >= STITCH_MIN_PROMPT) {
+          const missing = missingBlocks(prompt, STITCH_PROFILE)
+          if (missing.length > 0) {
+            throw new Error(denyStructure(`MCP tool "${event.tool}"`, missing, STITCH_PROFILE))
+          }
         }
       }
     })

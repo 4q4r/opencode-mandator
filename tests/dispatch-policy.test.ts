@@ -41,6 +41,17 @@ const loadRead = (sid: string, p: string, status = "completed") =>
 const HOME = os.homedir()
 const S = "sess-ext3"
 
+// ext 5 fixtures — briefs that satisfy the prompt-structure profiles.
+const GOOD_PROMPT =
+  "Role: you are a senior Go engineer. Task: fix the race in the ingest loop. " +
+  "Context: the worker pool drops events under load; repro in tests/race_test.go. " +
+  "Constraints: no new dependencies; the public API must stay stable; all tests must pass. " +
+  "Output format: root-cause summary, the diff, and test results."
+const GOOD_STITCH_PROMPT =
+  "Task: generate a mobile analytics dashboard screen. Context: SaaS fitness app, dark-first " +
+  "brand, existing sidebar navigation. Constraints: WCAG AA contrast, 8pt spacing grid, no " +
+  "external images. Output format: one screen with KPI cards, a weekly chart, and a bottom tab bar."
+
 beforeAll(async () => {
   await plugin.setup(ctx)
 })
@@ -169,7 +180,11 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extensions 
     loadSkill(S, "subagent-driven-development")
     loadSkill(S, "prompt-engineering-patterns")
     loadRead(S, `${HOME}/.config/opencode/memory/topics/workflow-git-pr.md`)
-    const m2 = await denyMsg({ tool: "subagent", sessionID: S, input: { agent: "code-reviewer", background: true } })
+    const m2 = await denyMsg({
+      tool: "subagent",
+      sessionID: S,
+      input: { agent: "code-reviewer", background: true, prompt: GOOD_PROMPT },
+    })
     expect(m2).toBeNull()
   })
 
@@ -260,5 +275,116 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extensions 
     await hooks["session.context"]({ system: sys, messages: [] })
     const primer = sys[0]?.text ?? ""
     expect((primer.match(/^- /gm) ?? []).length).toBe(12)
+  })
+})
+
+// --- ext 5: deterministic prompt-structure gate (subagent + stitch free-text prompts) ---
+describe("dispatch-policy — ext 5 prompt-structure gate", () => {
+  const PE = "sess-pe" // fully compliant session for structure tests
+  const complyAll = (sid: string) => {
+    for (const s of [
+      "brainstorming",
+      "grilling",
+      "build-with-exa",
+      "subagent-driven-development",
+      "dispatching-parallel-agents",
+      "prompt-engineering-patterns",
+    ])
+      loadSkill(sid, s)
+    loadRead(sid, `${HOME}/.config/opencode/MEMORY.md`)
+    loadRead(sid, `${HOME}/.config/opencode/memory/topics/workflow.md`)
+    loadRead(sid, `${HOME}/.config/opencode/memory/topics/workflow-git-pr.md`)
+  }
+
+  test("structured subagent brief passes bans + gate + structure", async () => {
+    complyAll(PE)
+    const m = await denyMsg({
+      tool: "subagent",
+      sessionID: PE,
+      input: { agent: "code-reviewer", background: true, prompt: GOOD_PROMPT },
+    })
+    expect(m).toBeNull()
+  })
+
+  test("brief missing Context and Output → deny lists exactly those two", async () => {
+    const m = await denyMsg({
+      tool: "subagent",
+      sessionID: PE,
+      input: {
+        agent: "code-reviewer",
+        background: true,
+        prompt: "You are a Go engineer. Task: fix the race. Constraints: no new deps; tests must pass.",
+      },
+    })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("Missing required block(s): Context; Output format.")
+    expect(m!).toContain("prompt-structure check")
+    expect(m!).toContain("COMPLIANCE WARNING")
+  })
+
+  test("missing/empty prompt → deny (all blocks listed)", async () => {
+    const m = await denyMsg({
+      tool: "subagent",
+      sessionID: PE,
+      input: { agent: "code-reviewer", background: true },
+    })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("The dispatch prompt is missing or empty.")
+    expect(m!).toContain("Missing required block(s): Role; Task; Context; Constraints; Output format.")
+  })
+
+  test("continuation dispatch (sessionID present) is exempt from the structure check", async () => {
+    const m = await denyMsg({
+      tool: "subagent",
+      sessionID: PE,
+      input: { agent: "code-reviewer", background: true, prompt: "please continue", sessionID: "ses_cont" },
+    })
+    expect(m).toBeNull()
+  })
+
+  test("stitch long unstructured prompt → deny lists the 4-block profile", async () => {
+    const weak = "make the app look better overall with nicer colors everywhere and modern typography ".repeat(3)
+    const m = await denyMsg({ tool: "stitch_generate_screen_from_text", sessionID: PE, input: { prompt: weak } })
+    expect(m).not.toBeNull()
+    expect(m!).toContain('MCP tool "stitch_generate_screen_from_text"')
+    expect(m!).toContain("Missing required block(s): Task; Context; Constraints; Output format.")
+  })
+
+  test("stitch long structured prompt passes", async () => {
+    const m = await denyMsg({
+      tool: "stitch_edit_screens",
+      sessionID: PE,
+      input: { prompt: GOOD_STITCH_PROMPT, projectId: "4044680601076201931" },
+    })
+    expect(m).toBeNull()
+  })
+
+  test("stitch short follow-up suggestion passes (length floor)", async () => {
+    const m = await denyMsg({
+      tool: "stitch_generate_variants",
+      sessionID: PE,
+      input: { prompt: "Yes, make them all" },
+    })
+    expect(m).toBeNull()
+  })
+
+  test("stitch tools are not skill-gated (zero-state session, short prompt)", async () => {
+    const m = await denyMsg({
+      tool: "stitch_generate_screen_from_text",
+      sessionID: "sess-stitch0",
+      input: { prompt: "make it dark" },
+    })
+    expect(m).toBeNull()
+  })
+
+  test("structure check runs AFTER the skill gate (zero-state subagent → gate message wins)", async () => {
+    const m = await denyMsg({
+      tool: "subagent",
+      sessionID: "sess-order",
+      input: { agent: "code-reviewer", background: true, prompt: "fix stuff" },
+    })
+    expect(m).not.toBeNull()
+    expect(m!).toContain('skill "brainstorming"')
+    expect(m!).not.toContain("prompt-structure check")
   })
 })
