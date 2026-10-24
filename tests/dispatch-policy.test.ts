@@ -527,6 +527,17 @@ describe("dispatch-policy — ext 6 wave 1 (memory mandate, memory-overwrite gua
     expect(m).toBeNull()
   })
 
+  test("write to a dot-named file INSIDE the memory tree is guarded (no allow false negative)", async () => {
+    _testStat.fn = () => true
+    const m = await denyMsg({
+      tool: "write",
+      sessionID: E6,
+      input: { path: "~/.config/opencode/memory/..notes.md" },
+    })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("whole-file write over an EXISTING global memory file")
+  })
+
   test("write to a non-memory path passes", async () => {
     _testStat.fn = () => true
     const m = await denyMsg({

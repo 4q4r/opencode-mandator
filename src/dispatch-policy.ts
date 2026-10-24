@@ -236,7 +236,7 @@ function isGlobalMemoryPath(p: string): boolean {
   const resolved = path.resolve(p)
   if (resolved === MEMORY_INDEX_PATH) return true
   const rel = path.relative(MEMORY_TREE_PATH, resolved)
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel))
 }
 
 // ext 6.6 test seam (fix round 1): production default is existsSync wrapped in try/catch
