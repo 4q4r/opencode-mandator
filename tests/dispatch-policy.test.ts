@@ -7,7 +7,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import os from "node:os"
 import path from "node:path"
-import plugin, { _testStat } from "../src/dispatch-policy.ts"
+import plugin, { _djb2, _testStat } from "../src/dispatch-policy.ts"
 
 const hooks: Record<string, (event: any) => any> = {}
 let transformed: Record<string, { description: string }> | null = null
@@ -630,5 +630,190 @@ describe("dispatch-policy — ext 6 wave 1 (memory mandate, memory-overwrite gua
     expect(m).not.toBeNull()
     expect(m!).toContain("FORBIDDEN")
     expect(m!).not.toContain("missing a specialized agent type")
+  })
+})
+
+// --- ext 6.4: identical-dispatch circuit breaker (wave 2, owner approved 2026-10-25).
+// Per-session counters bucketed by djb2(agent + NUL + prompt), with exact (agent, prompt)
+// comparison inside each bucket (fix round 1: 32-bit djb2 collisions are real — a
+// colliding pair keeps its own counter); fresh dispatches only (continuations exempt —
+// governed by the backlogged ext-6.3 depth cap); increment-then-check; deny when the
+// per-session count reaches 4 (3 identical executions pass). Check site: LAST on the
+// fresh path — after the structure and memory-mandate checks.
+//
+// The breaker state lives at module scope (beside the gate Maps) and bun runs tests
+// in declaration order, so EVERY test below uses its own fresh session ID: counters
+// always start from zero within a test and never leak across tests.
+describe("dispatch-policy — ext 6.4 identical-dispatch circuit breaker", () => {
+  const complyAll = (sid: string) => {
+    for (const s of [
+      "brainstorming",
+      "grilling",
+      "build-with-exa",
+      "subagent-driven-development",
+      "dispatching-parallel-agents",
+      "prompt-engineering-patterns",
+    ])
+      loadSkill(sid, s)
+    loadRead(sid, `${HOME}/.config/opencode/MEMORY.md`)
+    loadRead(sid, `${HOME}/.config/opencode/memory/topics/workflow.md`)
+    loadRead(sid, `${HOME}/.config/opencode/memory/topics/workflow-git-pr.md`)
+  }
+
+  const dispatch = (sid: string, agent: string, prompt: string, contSessionID?: string) =>
+    denyMsg({
+      tool: "subagent",
+      sessionID: sid,
+      input: contSessionID === undefined
+        ? { agent, background: true, prompt }
+        : { agent, background: true, prompt, sessionID: contSessionID },
+    })
+
+  test("same (agent, prompt) dispatched 3x → all pass (threshold is 4)", async () => {
+    const sid = "sess-ext64-3x"
+    complyAll(sid)
+    for (let i = 0; i < 3; i++) {
+      const m = await dispatch(sid, "code-reviewer", GOOD_PROMPT)
+      expect(m).toBeNull()
+    }
+  })
+
+  test("4th identical dispatch → deny contains 'runaway-loop guard' and the count '4'", async () => {
+    const sid = "sess-ext64-4x"
+    complyAll(sid)
+    for (let i = 0; i < 3; i++) {
+      const m = await dispatch(sid, "code-reviewer", GOOD_PROMPT)
+      expect(m).toBeNull()
+    }
+    const m4 = await dispatch(sid, "code-reviewer", GOOD_PROMPT)
+    expect(m4).not.toBeNull()
+    expect(m4!).toContain("runaway-loop guard")
+    expect(m4!).toContain("4")
+  })
+
+  test("same number of dispatches with different prompts → all pass (no shared counter)", async () => {
+    const sid = "sess-ext64-diff-prompts"
+    complyAll(sid)
+    for (const perspective of ["performance", "security", "API stability", "error handling"]) {
+      const m = await dispatch(sid, "code-reviewer", `${GOOD_PROMPT} Review perspective: ${perspective}.`)
+      expect(m).toBeNull()
+    }
+  })
+
+  test("same prompt, different agent → different hash (both pass)", async () => {
+    const sid = "sess-ext64-diff-agents"
+    complyAll(sid)
+    const m1 = await dispatch(sid, "code-reviewer", GOOD_PROMPT)
+    const m2 = await dispatch(sid, "backend-architect", GOOD_PROMPT)
+    expect(m1).toBeNull()
+    expect(m2).toBeNull()
+  })
+
+  test("continuation dispatches with an identical short prompt are never counted, always pass", async () => {
+    const sid = "sess-ext64-cont"
+    complyAll(sid)
+    for (let i = 0; i < 6; i++) {
+      const m = await dispatch(sid, "code-reviewer", "please continue", "ses_child_ext64")
+      expect(m).toBeNull()
+    }
+  })
+
+  test("per-session isolation: the same hash in a second session starts from zero", async () => {
+    const sidA = "sess-ext64-iso-a"
+    complyAll(sidA)
+    for (let i = 0; i < 3; i++) await dispatch(sidA, "code-reviewer", GOOD_PROMPT)
+    // sidA is now one dispatch away from the breaker; a second session starts at zero.
+    const sidB = "sess-ext64-iso-b"
+    complyAll(sidB)
+    const m = await dispatch(sidB, "code-reviewer", GOOD_PROMPT)
+    expect(m).toBeNull()
+  })
+
+  test("ordering: zero-state session → skill-gate deny wins (breaker not reached)", async () => {
+    const m = await dispatch("sess-ext64-order0", "code-reviewer", GOOD_PROMPT)
+    expect(m).not.toBeNull()
+    expect(m!).toContain('skill "brainstorming"')
+    expect(m!).not.toContain("runaway-loop guard")
+  })
+
+  test("ordering: malformed brief at a compliant session → structure deny wins, repeatedly (breaker not reached)", async () => {
+    const sid = "sess-ext64-order-struct"
+    complyAll(sid)
+    const malformed = "You are a Go engineer. Task: fix the race. Constraints: no new deps; tests must pass."
+    for (let i = 0; i < 5; i++) {
+      const m = await dispatch(sid, "code-reviewer", malformed)
+      expect(m).not.toBeNull()
+      expect(m!).toContain("prompt-structure check")
+      expect(m!).not.toContain("runaway-loop guard")
+    }
+  })
+
+  test("breaker deny message: NO 're-run this exact call', NO 'COMPLIANCE WARNING'", async () => {
+    const sid = "sess-ext64-msg"
+    complyAll(sid)
+    let m: string | null = null
+    for (let i = 0; i < 4; i++) m = await dispatch(sid, "code-reviewer", GOOD_PROMPT)
+    expect(m).not.toBeNull()
+    expect(m!).toContain("runaway-loop guard")
+    expect(m!).not.toContain("re-run this exact call")
+    expect(m!).not.toContain("COMPLIANCE WARNING")
+  })
+
+  // --- fix round 1 (PR #5 CodeRabbit finding): the 32-bit djb2 digest is a BUCKET INDEX
+  // only — a real collision would otherwise merge the counts of two different pairs. The
+  // tests brute-force a REAL collision pair via the exposed _djb2 seam (deterministic
+  // given the algorithm; search bounded to <=3-char suffixes over a 64-char alphabet) and
+  // prove that a colliding pair B keeps its own counter: its FIRST dispatch must pass,
+  // and it must not advance pair A's count toward the cap.
+  const collide = (): [string, string] => {
+    const ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/"
+    const seen = new Map<string, string>()
+    for (const len of [1, 2, 3]) {
+      const total = ALPHABET.length ** len
+      for (let n = 0; n < total; n++) {
+        let suffix = ""
+        let x = n
+        for (let i = 0; i < len; i++) {
+          suffix = ALPHABET[x % ALPHABET.length] + suffix
+          x = Math.floor(x / ALPHABET.length)
+        }
+        const digest = _djb2.fn(`code-reviewer\u0000${GOOD_PROMPT}${suffix}`)
+        const first = seen.get(digest)
+        if (first !== undefined) return [first, suffix]
+        seen.set(digest, suffix)
+      }
+    }
+    throw new Error("bounded collision search exhausted — djb2 candidate space produced no pair")
+  }
+
+  test("collision independence: colliding pair B (different prompt) is counted separately — its first dispatch passes", async () => {
+    const sid = "sess-ext64-collision"
+    complyAll(sid)
+    const [suffixA, suffixB] = collide()
+    const promptA = `${GOOD_PROMPT}${suffixA}`
+    const promptB = `${GOOD_PROMPT}${suffixB}`
+    expect(promptA).not.toBe(promptB) // different pairs...
+    expect(_djb2.fn(`code-reviewer\u0000${promptA}`)).toBe(_djb2.fn(`code-reviewer\u0000${promptB}`)) // ...same bucket
+    // Pair A dispatched 3x → all pass.
+    for (let i = 0; i < 3; i++) expect(await dispatch(sid, "code-reviewer", promptA)).toBeNull()
+    // Pair B, colliding digest, different prompt, 1x → must PASS: pre-fix, the shared
+    // 32-bit bucket counter made this exact dispatch pair A's "identical #4" (deny).
+    expect(await dispatch(sid, "code-reviewer", promptB)).toBeNull()
+  })
+
+  test("collision independence: pair B does not advance pair A's count — 4th identical A denies with count 4", async () => {
+    const sid = "sess-ext64-collision-cap"
+    complyAll(sid)
+    const [suffixA, suffixB] = collide()
+    const promptA = `${GOOD_PROMPT}${suffixA}`
+    const promptB = `${GOOD_PROMPT}${suffixB}`
+    for (let i = 0; i < 3; i++) expect(await dispatch(sid, "code-reviewer", promptA)).toBeNull()
+    expect(await dispatch(sid, "code-reviewer", promptB)).toBeNull()
+    // Pair A's counter is still at 3 (untouched by pair B): the 4th identical A denies
+    // with count 4 — not 5 (which a shared/merged count would report).
+    const m4 = await dispatch(sid, "code-reviewer", promptA)
+    expect(m4).not.toBeNull()
+    expect(m4!).toContain("runaway-loop guard")
+    expect(m4!).toContain("4")
   })
 })

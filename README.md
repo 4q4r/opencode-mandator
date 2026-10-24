@@ -22,7 +22,7 @@
 
 ## 📖 What is enforced
 
-Nine deterministic layers, enforced in-process by an OpenCode v2 plugin
+Ten deterministic layers, enforced in-process by an OpenCode v2 plugin
 (`@opencode/plugin` `Plugin.define`). Full normative spec: [`docs/RULES.md`](docs/RULES.md).
 
 | :-- | # | Rule | Scope |
@@ -36,11 +36,15 @@ Nine deterministic layers, enforced in-process by an OpenCode v2 plugin
 | :-- | 7 | **Memory-mandate keyword** (ext 6.1): a fresh dispatch brief must mandate reading global memory (`MEMORY.md` / `memory/topics` / `memory/projects` / "global memory" / RU «глобальная память» forms) | `subagent` (fresh; continuations exempt) |
 | :-- | 8 | **Memory whole-file overwrite guard** (ext 6.6): `write` over an EXISTING global memory file (memory tree incl. root `MEMORY.md`) is denied — append/supersede via `edit`; creating NEW memory files passes; stat failures allow (hygiene backstop) | `write` |
 | :-- | 9 | **Agent-missing deny** (ext 6.7): dispatches with `agent` missing/empty get an actionable deny; the `general` ban still wins for `agent: "general"` | `subagent`, any session state |
+| :-- | 10 | **Identical-dispatch circuit breaker** (ext 6.4): the same (agent, prompt) pair on fresh dispatches is denied when it reaches 4 per session — 3 identical executions pass; per-session djb2 counter; the deny carries **no** compliance trailer and **no** re-run instruction (deliberate — it is final for identical resends) | `subagent` (fresh; continuations exempt) |
 
 Deny messages list **exactly what is missing**, then the comply-then-rerun instruction,
 then a **COMPLIANCE WARNING** trailer: output violating the applied skills' requirements —
 including a badly written subagent brief — is declared REJECTED. The trailer is a declarative
 deterrent (owner decision); nothing in the plugin mechanically audits skill compliance.
+The ext-6.4 identical-dispatch deny is the deliberate exception: it carries neither the
+trailer nor a re-run instruction, because re-dispatching the identical call is exactly what
+that guard denies (differentiate the briefs or escalate instead).
 Absolute bans (rules 1–2) are checked before the skill gate.
 
 ## 🗺 Architecture
@@ -86,7 +90,10 @@ flowchart TD
    Output format must all be present (continuations with `sessionID` exempt).
 5. Memory-mandate check on fresh briefs: the brief must mandate reading global memory
    (ext 6.1; continuations exempt).
-6. All present → dispatch proceeds; anything missing → one exact-missing deny.
+6. Identical-dispatch breaker on fresh dispatches (ext 6.4): the 4th identical
+   (agent, prompt) pair in the session is denied — 3 identical executions pass; the deny
+   is final for identical resends (no trailer, no re-run instruction).
+7. All present → dispatch proceeds; anything missing → one exact-missing deny.
 
 ## 📂 Project Structure
 
