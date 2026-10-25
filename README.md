@@ -22,7 +22,7 @@
 
 ## 📖 What is enforced
 
-Ten deterministic layers, enforced in-process by an OpenCode v2 plugin
+Eleven deterministic layers, enforced in-process by an OpenCode v2 plugin
 (`@opencode/plugin` `Plugin.define`). Full normative spec: [`docs/RULES.md`](docs/RULES.md).
 
 | :-- | # | Rule | Scope |
@@ -37,6 +37,7 @@ Ten deterministic layers, enforced in-process by an OpenCode v2 plugin
 | :-- | 8 | **Memory whole-file overwrite guard** (ext 6.6): `write` over an EXISTING global memory file (memory tree incl. root `MEMORY.md`) is denied — append/supersede via `edit`; creating NEW memory files passes; stat failures allow (hygiene backstop) | `write` |
 | :-- | 9 | **Agent-missing deny** (ext 6.7): dispatches with `agent` missing/empty get an actionable deny; the `general` ban still wins for `agent: "general"` | `subagent`, any session state |
 | :-- | 10 | **Identical-dispatch circuit breaker** (ext 6.4): the same (agent, prompt) pair on fresh dispatches is denied when it reaches 4 per session — 3 identical executions pass; per-session djb2 counter; the deny carries **no** compliance trailer and **no** re-run instruction (deliberate — it is final for identical resends) | `subagent` (fresh; continuations exempt) |
+| :-- | 11 | **Continuation-chain cap** (ext 6.3): the 7th continuation of the same child session within one parent session is denied (6 pass; increment-then-check — denied calls and overrides still increment); a prompt carrying `[chain-cap-override] <reason>` may deliberately pass beyond the cap (one-shot, no config); the deny teaches the recovery — fresh agent + git branch + structured brief | `subagent` (continuations only; fresh dispatches exempt) |
 
 Deny messages list **exactly what is missing**, then the comply-then-rerun instruction,
 then a **COMPLIANCE WARNING** trailer: output violating the applied skills' requirements —

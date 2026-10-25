@@ -3,13 +3,14 @@
 The ext-6 analyst report (2026-10-25, §3) proposed seven enforcement layers. Wave 1 shipped
 ext-6.1 (memory-mandate keyword), ext-6.6 (memory whole-file overwrite guard), and ext-6.7
 (agent-missing deny); wave 2 shipped ext-6.4 (identical-dispatch circuit breaker,
-2026-10-25) — see `docs/RULES.md` §2 "ext 6 wave". The remaining proposals (6.2, 6.3, 6.5)
-live here with their owner-decided status. Full specs: the analyst report §ext-6.2–6.5.
+2026-10-25); wave 3 shipped ext-6.3 (continuation-chain cap, Variant A, 2026-10-25) — see
+`docs/RULES.md` §2 "ext 6 wave". The remaining proposals (6.2, 6.5) live here with their
+owner-decided status. Full specs: the analyst report §ext-6.2–6.5.
 
 | # | Layer | Priority | Status |
 | :-- | :-- | :-- | :-- |
 | 1 | ext-6.2 structured deny/dispatch audit log | P1 | Backlogged by owner 2026-10-25 |
-| 2 | ext-6.3 continuation-chain cap (>6) | P2 | BLOCKED ON DESIGN |
+| 2 | ext-6.3 continuation-chain cap (>6) | P2 | IMPLEMENTED 2026-10-25 (Variant A, owner approved) — see src/dispatch-policy.ts |
 | 3 | ext-6.4 identical-dispatch circuit breaker (≥4) | P2 | IMPLEMENTED 2026-10-25 (owner approved) — see src/dispatch-policy.ts |
 | 4 | ext-6.5 push-to-main segment guard | P2 | Parked |
 
@@ -25,15 +26,17 @@ exception for a layer that is observability, not a gate; gate paths keep their e
 Motivation: 134 deny events in 10 days are today visible only via fuzzy LIKE forensics over a
 5.9 GB database.
 
-## ext-6.3 — Continuation-chain cap (BLOCKED ON DESIGN)
+## ext-6.3 — Continuation-chain cap (implemented 2026-10-25)
 
-Owner requirement: the cap (proposed: >6 continuations per child session) must be adjustable —
-temporarily or permanently — WITHOUT config edits and without performance overhead. Candidate
-designs to evaluate before implementation:
-
-- env-var knob read per call (no config file; but process-env semantics need verification);
-- adaptive cap derived from per-session behavior (no knob at all, self-tuning);
-- controller-approved one-shot override (explicit raise path, audited).
+IMPLEMENTED 2026-10-25 (Variant A, owner approved): constant cap 6 + a visible one-shot
+`[chain-cap-override] <reason>` escape in the continuation prompt — no config edits, no
+perf overhead; the design requirement (adjustable without config involvement) is met, and
+the env-knob / adaptive-cap candidates below are superseded. Per-session counter
+`Map<parentSessionID, Map<childSessionID, count>>` at module scope, increment-then-check on
+every continuation dispatch (denied calls and overrides both increment — the counter tracks
+reality): 6 continuations of one child pass, the 7th denies unless the prompt matches
+`/\[chain-cap-override\]\s*\S/i` (marker + non-empty reason; a bare marker does not unlock).
+Normative spec: `docs/RULES.md` §2 row 10 and §3 row 9.
 
 ## ext-6.4 — Identical-dispatch circuit breaker (implemented 2026-10-25)
 
