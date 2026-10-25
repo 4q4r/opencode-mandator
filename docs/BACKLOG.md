@@ -33,8 +33,10 @@ IMPLEMENTED 2026-10-25 (Variant A, owner approved): constant cap 6 + a visible o
 perf overhead; the design requirement (adjustable without config involvement) is met, and
 the env-knob / adaptive-cap candidates below are superseded. Per-session counter
 `Map<parentSessionID, Map<childSessionID, count>>` at module scope, increment-then-check on
-every continuation dispatch (denied calls and overrides both increment — the counter tracks
-reality): 6 continuations of one child pass, the 7th denies unless the prompt matches
+every continuation that REACHES the count check — denials by earlier gates (skill, memory,
+structure, memory-mandate) do NOT increment the counter, while cap denials and
+override-carrying continuations do (the counter tracks reality): 6 continuations of one
+child pass, the 7th denies unless the prompt matches
 `/\[chain-cap-override\]\s*\S/i` (marker + non-empty reason; a bare marker does not unlock).
 Normative spec: `docs/RULES.md` §2 row 10 and §3 row 9.
 

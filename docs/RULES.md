@@ -36,7 +36,7 @@ non-exa MCP tools.
 | 7 | `write` to an existing global memory file | Never allowed, any state — append/supersede via `edit`; creating a NEW memory file passes |
 | 8 | `subagent` with `agent` missing/empty | Never allowed, any state (actionable deny; `agent: "general"` still gets the row-3 ban message) |
 | 9 | `subagent` fresh dispatch identical to an earlier one in the same session (same agent + prompt), count reaching 4 | Never allowed from the 4th identical fresh dispatch — 3 identical executions pass; per-session counter (djb2), continuations exempt — see "ext 6 wave" below |
-| 10 | `subagent` continuation of the same child session within one parent session, count passing 6 | Never allowed from the 7th continuation of the same child — 6 pass (increment-then-check; denied calls and overrides still increment); a continuation prompt carrying `[chain-cap-override] <reason>` may pass beyond the cap — see "ext 6 wave" below |
+| 10 | `subagent` continuation of the same child session within one parent session, count passing 6 | Never allowed from the 7th continuation of the same child — 6 pass (increment-then-check on continuations that reach the check; denials by earlier gates never increment — cap denials and overrides do); a continuation prompt carrying `[chain-cap-override] <reason>` may pass beyond the cap — see "ext 6 wave" below |
 
 Rationale (owner decision 2026-10-24): **prompt-engineering-patterns** is mandated on the
 dispatch path because dispatch briefs (subagent prompts) and agent-MCP prompts are prompts —
@@ -69,7 +69,7 @@ Exemptions (by design — don't block commands where free text cannot or should 
   would silently disable the check (same degradation as the tool-description hint).
 
 Ordering: bans (incl. rows 3, 4, 8) → skill/memory gate → structure check → memory-mandate
-check → per-path counter — identical-dispatch breaker on the fresh path (rows 6 and 9),
+check → per-path counter — identical-dispatch breaker on the fresh path (row 9),
 continuation-chain cap on continuations (row 10). Compliance first — load the skill, then
 the brief is validated, then its memory mandate is verified, and only then does the per-path
 counter run, so compliance-teaching denies keep precedence: a gate/structure deny never
