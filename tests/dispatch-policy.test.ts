@@ -817,3 +817,172 @@ describe("dispatch-policy — ext 6.4 identical-dispatch circuit breaker", () =>
     expect(m4!).toContain("4")
   })
 })
+
+// --- ext 6.3: continuation-chain cap (wave 3, Variant A — owner approved 2026-10-25).
+// Per-(parent, child) counters in Map<parentSessionID, Map<childSessionID, count>> at
+// module scope (same fail-closed restart/hot-reload semantics as the other Maps);
+// continuations only (input.sessionID present) — fresh dispatches never touch this
+// counter (they have the ext-6.4 breaker). Increment-then-check on EVERY continuation
+// that reaches the check: 6 continuations of one child pass, the 7th denies, and the
+// deny carries the live count. Variant A escape: a continuation that would exceed the
+// cap is ALLOWED iff its prompt matches /\[chain-cap-override\]\s*\S/i (marker + a
+// non-empty reason) — a bare marker does not unlock, and the counter keeps counting
+// under overrides (it tracks reality: neither denied calls nor overrides reset it).
+// Ordering: the check sits after the fresh-dispatch inner block, behind the skill/memory
+// gate, so compliance-teaching denies keep precedence and never consume the cap.
+//
+// Module-scope state + declaration-order execution: every test uses its own fresh parent
+// session ID (and its own child ID), mirroring the ext-6.4 block's isolation convention.
+describe("dispatch-policy — ext 6.3 continuation-chain cap (Variant A)", () => {
+  const complyAll = (sid: string) => {
+    for (const s of [
+      "brainstorming",
+      "grilling",
+      "build-with-exa",
+      "subagent-driven-development",
+      "dispatching-parallel-agents",
+      "prompt-engineering-patterns",
+    ])
+      loadSkill(sid, s)
+    loadRead(sid, `${HOME}/.config/opencode/MEMORY.md`)
+    loadRead(sid, `${HOME}/.config/opencode/memory/topics/workflow.md`)
+    loadRead(sid, `${HOME}/.config/opencode/memory/topics/workflow-git-pr.md`)
+  }
+
+  const dispatch = (sid: string, agent: string, prompt: string, contSessionID: string) =>
+    denyMsg({
+      tool: "subagent",
+      sessionID: sid,
+      input: { agent, background: true, prompt, sessionID: contSessionID },
+    })
+
+  test("six continuations of one child pass; the 7th denies with the chain message and live count", async () => {
+    const sid = "sess-ext63-cap"
+    complyAll(sid)
+    for (let i = 1; i <= 6; i++) {
+      const m = await dispatch(sid, "code-reviewer", `fix round ${i}`, "ses_child_ext63")
+      expect(m).toBeNull()
+    }
+    const m7 = await dispatch(sid, "code-reviewer", "fix round 7", "ses_child_ext63")
+    expect(m7).not.toBeNull()
+    expect(m7!).toContain("continuation chain reached 7")
+    expect(m7!).toContain("cap 6")
+    expect(m7!).toContain("FRESH agent")
+    expect(m7!).toContain("chain-cap-override")
+    expect(m7!).toContain("COMPLIANCE WARNING")
+  })
+
+  test("the 7th continuation WITH '[chain-cap-override] reason here' passes", async () => {
+    const sid = "sess-ext63-override"
+    complyAll(sid)
+    for (let i = 1; i <= 6; i++) {
+      expect(await dispatch(sid, "code-reviewer", `step ${i}`, "ses_child63o")).toBeNull()
+    }
+    const m7 = await dispatch(
+      sid,
+      "code-reviewer",
+      "step 7 [chain-cap-override] owner asked for one more verification pass",
+      "ses_child63o",
+    )
+    expect(m7).toBeNull()
+  })
+
+  test("the 7th with a bare '[chain-cap-override]' (no reason) denies", async () => {
+    const sid = "sess-ext63-bare"
+    complyAll(sid)
+    for (let i = 1; i <= 6; i++) {
+      expect(await dispatch(sid, "code-reviewer", `step ${i}`, "ses_child63b")).toBeNull()
+    }
+    const m7 = await dispatch(sid, "code-reviewer", "step 7 [chain-cap-override]", "ses_child63b")
+    expect(m7).not.toBeNull()
+    expect(m7!).toContain("continuation chain reached 7")
+    expect(m7!).toContain("chain-cap-override") // the deny still teaches the correct escape
+  })
+
+  test("marker followed only by whitespace does not unlock (reason must be non-empty)", async () => {
+    const sid = "sess-ext63-ws"
+    complyAll(sid)
+    for (let i = 1; i <= 6; i++) {
+      expect(await dispatch(sid, "code-reviewer", `step ${i}`, "ses_child63w")).toBeNull()
+    }
+    const m7 = await dispatch(sid, "code-reviewer", "step 7 [chain-cap-override]   ", "ses_child63w")
+    expect(m7).not.toBeNull()
+    expect(m7!).toContain("continuation chain reached 7")
+  })
+
+  test("counters keep counting under overrides: 7th plain denied → override re-run passes → next plain denied (no reset)", async () => {
+    const sid = "sess-ext63-noreset"
+    complyAll(sid)
+    for (let i = 1; i <= 6; i++) {
+      expect(await dispatch(sid, "code-reviewer", `step ${i}`, "ses_child63n")).toBeNull()
+    }
+    // 7th plain → denied (count 7).
+    const m7 = await dispatch(sid, "code-reviewer", "step 7", "ses_child63n")
+    expect(m7).not.toBeNull()
+    expect(m7!).toContain("continuation chain reached 7")
+    // The taught recovery: the same call re-run with the marker → allowed (count 8).
+    const m7o = await dispatch(
+      sid,
+      "code-reviewer",
+      "step 7 [chain-cap-override] deliberate one-shot continuation, owner approved",
+      "ses_child63n",
+    )
+    expect(m7o).toBeNull()
+    // The override did NOT reset or lift anything: the next plain continuation is denied
+    // again — and the deny reports the true count 9 (both the denied call and the
+    // override call incremented the counter).
+    const m8 = await dispatch(sid, "code-reviewer", "step 8", "ses_child63n")
+    expect(m8).not.toBeNull()
+    expect(m8!).toContain("continuation chain reached 9")
+  })
+
+  test("per-parent isolation: the same child continued from a second parent session starts at zero", async () => {
+    const sidA = "sess-ext63-iso-a"
+    complyAll(sidA)
+    for (let i = 1; i <= 6; i++) {
+      expect(await dispatch(sidA, "code-reviewer", `step ${i}`, "ses_child63iso")).toBeNull()
+    }
+    const m7a = await dispatch(sidA, "code-reviewer", "step 7", "ses_child63iso")
+    expect(m7a).not.toBeNull() // parent A is at the cap
+    // Parent B continues the SAME child: its counter starts at zero.
+    const sidB = "sess-ext63-iso-b"
+    complyAll(sidB)
+    const m1b = await dispatch(sidB, "code-reviewer", "step 1", "ses_child63iso")
+    expect(m1b).toBeNull()
+  })
+
+  test("fresh dispatches (distinct prompts) never increment chain counters", async () => {
+    const sid = "sess-ext63-fresh"
+    complyAll(sid)
+    for (let i = 1; i <= 6; i++) {
+      const m = await denyMsg({
+        tool: "subagent",
+        sessionID: sid,
+        input: { agent: "code-reviewer", background: true, prompt: `${GOOD_PROMPT} Perspective ${i}: correctness.` },
+      })
+      expect(m).toBeNull()
+    }
+    // The chain counter must still be at zero for this session: 6 continuations of the
+    // child pass (had the fresh dispatches polluted the counter, the 6th would already
+    // deny) and the 7th denies (the cap is real).
+    for (let i = 1; i <= 6; i++) {
+      expect(await dispatch(sid, "code-reviewer", `step ${i}`, "ses_child63f")).toBeNull()
+    }
+    const m7 = await dispatch(sid, "code-reviewer", "step 7", "ses_child63f")
+    expect(m7).not.toBeNull()
+    expect(m7!).toContain("continuation chain reached 7")
+  })
+
+  test("ordering: zero-state session continuation → skill-gate message wins, and the cap is not consumed", async () => {
+    const sid = "sess-ext63-order0"
+    const m = await dispatch(sid, "code-reviewer", "please continue", "ses_child63ord")
+    expect(m).not.toBeNull()
+    expect(m!).toContain('skill "brainstorming"')
+    expect(m!).not.toContain("continuation chain")
+    // The gate deny happened before the chain check: the counter never incremented.
+    complyAll(sid)
+    for (let i = 1; i <= 6; i++) {
+      expect(await dispatch(sid, "code-reviewer", `step ${i}`, "ses_child63ord")).toBeNull()
+    }
+  })
+})
