@@ -57,6 +57,19 @@ import path from "node:path"
 //      fresh path (after the structure and memory-mandate checks, so compliance-teaching
 //      denies keep precedence). The deny deliberately carries NO compliance trailer and
 //      NO re-run instruction: re-running is exactly what is being denied.
+//  13. Continuation-chain cap (ext 6.3): a continuation of the same child session
+//      within one parent session is DENIED when its per-(parent, child) count passes
+//      6 — 6 continuations pass, the 7th denies (increment-then-check; denied calls
+//      and overrides both increment — the counter tracks reality). Variant A escape
+//      (owner approved 2026-10-25): the continuation prompt may carry the marker
+//      [chain-cap-override] followed by a non-empty reason (regex
+//      /\[chain-cap-override\]\s*\S/i) — a deliberate, visible, one-shot escape with
+//      no config involvement. Fresh dispatches never touch this counter. Runs in the
+//      DISPATCH_TOOLS branch after the fresh-dispatch inner block, behind the
+//      skill/memory gate (compliance-teaching denies keep precedence; a gate deny
+//      never consumes the cap). The deny carries the live count, the fresh-agent
+//      recovery, the marker instruction, and the shared COMPLIANCE_WARNING trailer
+//      (here the re-run advice IS valid — re-run with the marker).
 //
 // Safety valves:
 //   - OPENCODE_ENFORCE_OFF=1 disables all plugin behavior (checked per hook call).
@@ -276,10 +289,20 @@ const readTargets = new Map<string, Set<string>>()
 // instead of merging into another pair's count. Sits beside the gate Maps at module scope
 // with the same fail-closed restart/hot-reload semantics (cleared when the process
 // restarts or the plugin reloads). Fresh dispatches only: continuations (input.sessionID
-// present) are exempt — they are governed by the backlogged ext-6.3 continuation-chain
-// cap (docs/BACKLOG.md).
+// present) are exempt — they are governed by the ext-6.3 continuation-chain cap
+// (layer 13 below).
 type BucketPair = { agent: string; prompt: string; count: number }
 const dispatchHashCount = new Map<string, Map<string, BucketPair[]>>()
+
+// ext 6.3: per-session continuation-chain state —
+// Map<parentSessionID, Map<childSessionID, count>>. Sits beside the other Maps at
+// module scope with the same fail-closed restart/hot-reload semantics (cleared when
+// the process restarts or the plugin reloads). Continuations only (input.sessionID
+// present): fresh dispatches never touch this counter. Accepted growth class: one
+// inner Map per parent session that continued at least one child, one small-integer
+// entry per distinct continued child — bounded by live sessions × continued children
+// for the process lifetime; identical shape and lifetime to dispatchHashCount.
+const continuationChainCount = new Map<string, Map<string, number>>()
 
 // djb2 (32-bit), inline per the ext-6.4 spec — no new imports. Returns an unsigned
 // decimal string so the digest can key the counter Map directly.
@@ -392,6 +415,35 @@ function denyIdenticalLoop(n: number): string {
   )
 }
 
+// ext 6.3: continuation-chain cap — increment-then-check per (parent session, child
+// session) pair; the deny fires when a child's continuation count passes CHAIN_CAP
+// (6 continuations pass, the 7th is denied). Denied calls still increment, and
+// Variant A overrides still increment: the counter tracks reality. Owner approved
+// 2026-10-25 (Variant A: constant cap + visible one-shot escape, no config knob).
+const CHAIN_CAP = 6
+
+// Variant A escape (owner requirement 2026-10-25: adjustable without config edits): a
+// continuation that would exceed the cap is ALLOWED iff the prompt carries the marker
+// followed by a NON-EMPTY reason — a bare marker does not unlock.
+const CHAIN_OVERRIDE_RE = /\[chain-cap-override\]\s*\S/i
+
+// Unlike denyIdenticalLoop, this deny carries the COMPLIANCE_WARNING trailer and the
+// re-run instruction — here the re-run advice IS valid: re-running with the added
+// marker is exactly the sanctioned one-shot escape, alongside the primary recovery
+// (start a FRESH agent; the persistent-worker anti-pattern, owner bans 2026-09-20 /
+// PR97 / PR111).
+function denyContinuationChain(n: number): string {
+  return (
+    `DENIED by dispatch-policy plugin: this child-session continuation chain reached ${n} ` +
+    `continuations in one session (cap ${CHAIN_CAP}) — persistent-worker pumping of one child ` +
+    "session is the anti-pattern the owner bans (2026-09-20; PR97/PR111). Start a FRESH agent " +
+    "instead and hand off state via a git branch + a structured brief. To continue once beyond " +
+    "the cap deliberately, add [chain-cap-override] <reason> to the continuation prompt, then " +
+    "re-run this exact call." +
+    COMPLIANCE_WARNING
+  )
+}
+
 function denyStructure(target: string, missing: string[], profile: ReadonlyArray<BlockKey>): string {
   const guide = profile.map((key) => BLOCKS[key].name).join(" / ")
   return (
@@ -462,7 +514,7 @@ export default Plugin.define({
           // deny, which is the correct lesson). Increment-then-check per session:
           // 3 identical executions pass, the 4th identical dispatch is denied. Different
           // (agent, prompt) pairs never share a counter; continuations never reach this
-          // branch (sessionID present → exempt, governed by the backlogged ext-6.3 cap).
+          // branch (sessionID present → exempt, governed by the ext-6.3 cap below).
           let perSessionCounts = dispatchHashCount.get(event.sessionID)
           if (!perSessionCounts) {
             perSessionCounts = new Map()
@@ -485,6 +537,28 @@ export default Plugin.define({
           // Increment-then-check, unchanged: a denied dispatch still counts.
           pair.count += 1
           if (pair.count >= IDENTICAL_CAP) throw new Error(denyIdenticalLoop(pair.count))
+        } else {
+          // ext 6.3: continuation-chain cap — CONTINUATIONS only (input.sessionID
+          // present), after the fresh-dispatch inner block. Bans and the skill/memory
+          // gate have already passed (compliance-teaching denies keep precedence: a
+          // gate deny throws before this branch and never consumes the cap). Fresh
+          // dispatches never reach this branch — they have the ext-6.4 breaker above.
+          const prompt = typeof input.prompt === "string" ? input.prompt : ""
+          let perChildCounts = continuationChainCount.get(event.sessionID)
+          if (!perChildCounts) {
+            perChildCounts = new Map()
+            continuationChainCount.set(event.sessionID, perChildCounts)
+          }
+          const childID = String(input.sessionID)
+          // Increment-then-check on every continuation dispatch that reaches this
+          // check — a denied continuation still counts, and an override still
+          // increments: the counter tracks reality (overrides neither reset nor lift
+          // the cap).
+          const count = (perChildCounts.get(childID) ?? 0) + 1
+          perChildCounts.set(childID, count)
+          if (count > CHAIN_CAP && !CHAIN_OVERRIDE_RE.test(prompt)) {
+            throw new Error(denyContinuationChain(count))
+          }
         }
       } else if (STITCH_PROMPT_TOOLS.has(event.tool)) {
         const prompt = typeof input.prompt === "string" ? input.prompt : ""

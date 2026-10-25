@@ -36,6 +36,7 @@ non-exa MCP tools.
 | 7 | `write` to an existing global memory file | Never allowed, any state — append/supersede via `edit`; creating a NEW memory file passes |
 | 8 | `subagent` with `agent` missing/empty | Never allowed, any state (actionable deny; `agent: "general"` still gets the row-3 ban message) |
 | 9 | `subagent` fresh dispatch identical to an earlier one in the same session (same agent + prompt), count reaching 4 | Never allowed from the 4th identical fresh dispatch — 3 identical executions pass; per-session counter (djb2), continuations exempt — see "ext 6 wave" below |
+| 10 | `subagent` continuation of the same child session within one parent session, count passing 6 | Never allowed from the 7th continuation of the same child — 6 pass (increment-then-check on continuations that reach the check; denials by earlier gates never increment — cap denials and overrides do); a continuation prompt carrying `[chain-cap-override] <reason>` may pass beyond the cap — see "ext 6 wave" below |
 
 Rationale (owner decision 2026-10-24): **prompt-engineering-patterns** is mandated on the
 dispatch path because dispatch briefs (subagent prompts) and agent-MCP prompts are prompts —
@@ -68,9 +69,12 @@ Exemptions (by design — don't block commands where free text cannot or should 
   would silently disable the check (same degradation as the tool-description hint).
 
 Ordering: bans (incl. rows 3, 4, 8) → skill/memory gate → structure check → memory-mandate
-check → identical-dispatch breaker (rows 6 and 9: fresh dispatches only; compliance first —
-load the skill, then the brief is validated, then its memory mandate is verified, and only
-then does the identical-loop counter run, so compliance-teaching denies keep precedence).
+check → per-path counter — identical-dispatch breaker on the fresh path (row 9),
+continuation-chain cap on continuations (row 10). Compliance first — load the skill, then
+the brief is validated, then its memory mandate is verified, and only then does the per-path
+counter run, so compliance-teaching denies keep precedence: a gate/structure deny never
+consumes a counter, and a continuation increments the cap only after passing every earlier
+check.
 
 Recording rules (what counts as compliance):
 
@@ -83,10 +87,10 @@ Recording rules (what counts as compliance):
 ### ext 6 wave (owner decisions 2026-10-25; spec source: the ext-6 analyst report, 2026-10-25)
 
 Wave 1 shipped three deterministic layers (6.1, 6.6, 6.7); wave 2 shipped the
-identical-dispatch circuit breaker (6.4) on 2026-10-25. The remaining analyst proposals are
-tracked in [`docs/BACKLOG.md`](BACKLOG.md) (6.2 audit log, 6.3 continuation-chain cap,
-6.5 shell guards — the pkill/killall slice moved to native `opencode.json` V2 permission
-rules, owner decision 2026-10-25).
+identical-dispatch circuit breaker (6.4) and wave 3 the continuation-chain cap (6.3,
+Variant A), both on 2026-10-25. The remaining analyst proposals are tracked in
+[`docs/BACKLOG.md`](BACKLOG.md) (6.2 audit log, 6.5 shell guards — the pkill/killall slice
+moved to native `opencode.json` V2 permission rules, owner decision 2026-10-25).
 
 **Memory-mandate keyword (6.1).** A fresh dispatch brief (`sessionID` absent) must contain a
 memory-reading mandate — keyword presence, case-insensitive:
@@ -121,8 +125,8 @@ denied when the per-session count reaches **4**: increment-then-check, so 3 iden
 executions pass and the 4th is denied (a legitimate reviewer panel of 3 still fits; a 4th
 identical resend is a runaway loop). The counter is a `Map<parentSessionID, Map<hash, count>>`
 at module scope beside the gate Maps — same fail-closed restart/hot-reload semantics by
-construction. Continuations are fully exempt (they are governed by the backlogged ext-6.3
-depth cap). The check runs LAST on the fresh path, after the structure and memory-mandate
+construction. Continuations are fully exempt (they are governed by the ext-6.3
+depth cap, below). The check runs LAST on the fresh path, after the structure and memory-mandate
 checks: compliance-teaching denies keep precedence, so a loop of malformed briefs keeps
 receiving the structure deny — the correct lesson. Deltas vs the analyst sketch, deliberate
 (owner decision): the deny message carries **no COMPLIANCE WARNING trailer and no "re-run
@@ -130,6 +134,26 @@ this exact call" instruction** — re-running is exactly what is being denied, a
 trailer's "must be re-dispatched" wording contradicts the guard. The deny is final for
 identical resends: differentiate the briefs (per-perspective prompts) or escalate to the
 owner.
+
+**Continuation-chain cap (6.3, wave 3 — Variant A, owner approved 2026-10-25).** A
+continuation (`sessionID` present) of a child session is counted per (parent session, child
+session) pair — `Map<parentSessionID, Map<childSessionID, count>>` at module scope beside
+the other Maps, same fail-closed restart/hot-reload semantics. Increment-then-check on every
+continuation that reaches the check: 6 continuations of one child pass, the 7th is denied
+with the live count. **Variant A escape:** the denial is lifted for that one dispatch iff
+the prompt carries `[chain-cap-override]` followed by a non-empty reason — regex
+`/\[chain-cap-override\]\s*\S/i`; a bare marker does not unlock. The marker is a deliberate,
+visible, per-dispatch escape with no config involvement (owner requirement: adjustable
+without config edits and without performance overhead — the env-knob and adaptive-cap
+candidates from the analyst sketch are superseded). The counter keeps counting under
+overrides — denied calls and overrides both increment (the counter tracks reality), so an
+override neither resets nor lifts the cap. Fresh dispatches never touch this counter (they
+have the 6.4 breaker). The check sits after the fresh-dispatch inner block, behind the
+skill/memory gate: compliance-teaching denies keep precedence and a gate deny never consumes
+the cap. The deny carries the live count, the fresh-agent recovery (start a FRESH agent and
+hand off state via a git branch + a structured brief — the persistent-worker anti-pattern,
+owner bans 2026-09-20 / PR97 / PR111), the marker instruction, and the shared trailer — here
+the re-run advice IS valid: re-run with the marker added.
 
 ## 3. Deny messages
 
@@ -148,6 +172,7 @@ the procedural one.
 | 6 | `write` over an existing global memory file (§2 row 7) | `DENIED by dispatch-policy plugin: whole-file write over an EXISTING global memory file is forbidden — whole-file rewrites of memory race concurrent agents (2026-10-09/10 incidents). Append or supersede the entry via the `edit` tool instead (append-only by anchors; supersede-in-place, never full-file write). Creating a NEW memory file is allowed.` + trailer |
 | 7 | `agent` missing/empty (§2 row 8) | `DENIED by dispatch-policy plugin: the dispatch is missing a specialized agent type (agent missing or empty). Pick a specialized agent type — e.g. backend-architect, code-reviewer, frontend-developer, trend-researcher (full list: opencode debug agents) — then re-run this exact call.` + trailer |
 | 8 | Identical fresh dispatch, count reaching 4 in one session (§2 row 9) | `DENIED by dispatch-policy plugin: identical dispatch sent <N> times in this session — runaway-loop guard on identical (agent, prompt) pairs. This deny is final for identical resends: differentiate the briefs (per-perspective prompts) or escalate to the owner.` — **no trailer, the deliberate exception to the "+ trailer" convention**: the trailer's "must be re-dispatched" wording contradicts the guard, and the message intentionally carries no "re-run this exact call" instruction (re-running is exactly what is denied). `<N>` is the live per-session count; the first deny fires at N = 4 |
+| 9 | Continuation chain of one child passing 6 in one session, no valid override marker (§2 row 10) | `DENIED by dispatch-policy plugin: this child-session continuation chain reached <N> continuations in one session (cap 6) — persistent-worker pumping of one child session is the anti-pattern the owner bans (2026-09-20; PR97/PR111). Start a FRESH agent instead and hand off state via a git branch + a structured brief. To continue once beyond the cap deliberately, add [chain-cap-override] <reason> to the continuation prompt, then re-run this exact call.` + trailer — here the re-run advice IS valid: the re-run carries the added marker, and this one dispatch then passes (the counter still increments). `<N>` is the live per-(parent, child) count; the first deny fires at N = 7 |
 
 Shared trailer (verbatim, appended to every deny message **except row 8** — the
 identical-dispatch breaker deny is final for identical resends and deliberately omits both
