@@ -22,14 +22,14 @@
 
 ## 📖 What is enforced
 
-Eleven deterministic layers, enforced in-process by an OpenCode v2 plugin
+Twelve deterministic layers, enforced in-process by an OpenCode v2 plugin
 (`@opencode/plugin` `Plugin.define`). Full normative spec: [`docs/RULES.md`](docs/RULES.md).
 
 | :-- | # | Rule | Scope |
 | :-- | :-- | :-- | :-- |
 | :-- | 1 | `agent: "general"` dispatches are **FORBIDDEN** | `subagent`, any session state |
 | :-- | 2 | Every dispatch requires **`background: true`** — deny, never rewrite | `subagent`, strict (`false` and omitted both deny) |
-| :-- | 3 | **Skill gate**: calls denied until the session loaded `brainstorming` + `grilling` + `build-with-exa` via `skill`… | `edit`, `write`, `shell`, `bash`, `apply_patch`, `subagent`, `webfetch`, `websearch`, `execute`, any `*exa*` MCP tool |
+| :-- | 3 | **Skill gate**: calls denied until the session loaded `brainstorming` + `grilling` + `build-with-exa` + `context7-mcp` via `skill`… | `edit`, `write`, `shell`, `bash`, `apply_patch`, `subagent`, `webfetch`, `websearch`, `execute`, any `*exa*` MCP tool, `context7*` / `adb_mcp*` MCP tools (ext 7.1) |
 | :-- | 4 | **Memory gate**: …and read `~/.config/opencode/MEMORY.md`; dispatches additionally need `subagent-driven-development` + `dispatching-parallel-agents` + `prompt-engineering-patterns` + reads of `memory/topics/workflow.md` + `workflow-git-pr.md` | same gated set (+ orchestrator preflight on `subagent`) |
 | :-- | 5 | **PRIMER** injected as a system text part before every model request + one-line policy hint on the `subagent` tool description; brief spec: docs/BRIEFS.md | every agent request / tool selection |
 | :-- | 6 | **Prompt-structure gate**: a fresh dispatch brief must contain Role / Task / Context / Constraints / Output format (per `prompt-engineering-patterns`); the 3 Stitch free-text prompt tools need a 4-block profile on prompts ≥ 120 chars | `subagent` (fresh) + `stitch_generate_screen_from_text` / `stitch_edit_screens` / `stitch_generate_variants` |
@@ -38,6 +38,7 @@ Eleven deterministic layers, enforced in-process by an OpenCode v2 plugin
 | :-- | 9 | **Agent-missing deny** (ext 6.7): dispatches with `agent` missing/empty get an actionable deny; the `general` ban still wins for `agent: "general"` | `subagent`, any session state |
 | :-- | 10 | **Identical-dispatch circuit breaker** (ext 6.4): the same (agent, prompt) pair on fresh dispatches is denied when it reaches 4 per session — 3 identical executions pass; per-session djb2 counter; the deny carries **no** compliance trailer and **no** re-run instruction (deliberate — it is final for identical resends) | `subagent` (fresh; continuations exempt) |
 | :-- | 11 | **Continuation-chain cap** (ext 6.3): the 7th continuation of the same child session within one parent session is denied (6 pass; increment-then-check — continuations denied by earlier gates never increment, cap-denied and override-carrying ones do); a prompt carrying `[chain-cap-override] <reason>` may deliberately pass beyond the cap (one-shot, no config); the deny teaches the recovery — fresh agent + git branch + structured brief | `subagent` (continuations only; fresh dispatches exempt) |
+| :-- | 12 | **MCP→skill gate** (ext 7.1): an MCP tool whose server has a related skill is denied until that skill is loaded — prefix match on the flat `<server>_<tool>` name: `context7*` → `context7-mcp`, `adb_mcp*` → `adb-mcp`; the deny carries a per-skill usage hint (resolve-library-id before query-docs / read the accessibility tree before tapping). Honest inertness note: the `context7` entry cannot fire while `context7-mcp` is mandatory (rule 3) — live enforcement = `adb_mcp*`. No mappings for the 5 skill-less MCP servers (docs/BACKLOG.md) | MCP tools matching a prefix; check site: after the skill/memory gate, before the structure chain |
 
 Deny messages list **exactly what is missing**, then the comply-then-rerun instruction,
 then a **COMPLIANCE WARNING** trailer: output violating the applied skills' requirements —
@@ -84,7 +85,8 @@ flowchart TD
 
 1. Ban checks first: `agent` missing/empty → deny (ext 6.7); `agent: "general"` → deny;
    `background !== true` → deny.
-2. Base gate: 3 skills + `MEMORY.md` read must already be in session state.
+2. Base gate: 4 skills (+ `context7-mcp`, ext 7.1) + the `MEMORY.md` read must already
+   be in session state.
 3. Dispatch gate: + `subagent-driven-development`, `dispatching-parallel-agents`,
    `prompt-engineering-patterns`, `workflow.md`, `workflow-git-pr.md` reads.
 4. Prompt-structure check on the brief: Role / Task / Context / Constraints /

@@ -1,11 +1,12 @@
-# BACKLOG.md — ext-6 wave deferrals
+# BACKLOG.md — enforcement deferrals
 
 The ext-6 analyst report (2026-10-25, §3) proposed seven enforcement layers. Wave 1 shipped
 ext-6.1 (memory-mandate keyword), ext-6.6 (memory whole-file overwrite guard), and ext-6.7
 (agent-missing deny); wave 2 shipped ext-6.4 (identical-dispatch circuit breaker,
 2026-10-25); wave 3 shipped ext-6.3 (continuation-chain cap, Variant A, 2026-10-25) — see
 `docs/RULES.md` §2 "ext 6 wave". The remaining proposals (6.2, 6.5) live here with their
-owner-decided status. Full specs: the analyst report §ext-6.2–6.5.
+owner-decided status. Full specs: the analyst report §ext-6.2–6.5. ext-7.1 (context7-mcp in
+the mandatory set + the MCP→skill gate) shipped 2026-11-07 and left one follow-up here.
 
 | # | Layer | Priority | Status |
 | :-- | :-- | :-- | :-- |
@@ -13,6 +14,14 @@ owner-decided status. Full specs: the analyst report §ext-6.2–6.5.
 | 2 | ext-6.3 continuation-chain cap (>6) | P2 | IMPLEMENTED 2026-10-25 (Variant A, owner approved) — see src/dispatch-policy.ts |
 | 3 | ext-6.4 identical-dispatch circuit breaker (≥4) | P2 | IMPLEMENTED 2026-10-25 (owner approved) — see src/dispatch-policy.ts |
 | 4 | ext-6.5 push-to-main segment guard | P2 | Parked |
+| 5 | Author skills for the 5 skill-less MCP servers (zai-mcp-server, cloakbrowser, stitch, ssh-any, circumvention-corpus) so the MCP→skill gate (ext 7.1) can cover them | P3 | Owner decision pending (2026-11-07) |
+
+## ext-7.1 follow-up — skills for the skill-less MCP servers (owner decision pending 2026-11-07)
+
+The ext-7.1 MCP→skill gate maps only `context7` and `adb_mcp`. The five other MCP servers
+(zai-mcp-server, cloakbrowser, stitch, ssh-any, circumvention-corpus) have no related skill
+in the system, so the gate cannot cover them — authoring those skills is a separate future
+task (owner informed 2026-11-07; decision pending).
 
 ## ext-6.2 — Structured deny/dispatch audit log (P1, backlogged by owner 2026-10-25)
 

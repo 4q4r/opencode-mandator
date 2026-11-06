@@ -18,16 +18,18 @@ session DB (stored dispatches, read-only sqlite).
 | Web | `webfetch`, `websearch` | live |
 | Code Mode | `execute` | live; gates the `tools.exa.*` composition bypass surface |
 | MCP exa | any tool name containing the substring `exa` (e.g. `exa_web_search_exa`) | live |
+| MCP skill-requirement (ext 7.1) | any tool name starting with `context7` or `adb_mcp` (flat `<server>_<tool>` MCP convention) | live names: `context7_resolve_library_id`, `context7_query_docs`; `adb_mcp_*` (server `adb-mcp`) |
 
 Whitelisted **by construction** (never gated, they are the compliance paths):
 `skill`, `read`, `grep`, `glob`, `todo*`, `question`, `read_mcp_resource`,
-non-exa MCP tools.
+non-exa MCP tools **without a skill requirement** (§2 row 11 — since ext 7.1 the
+`context7*` / `adb_mcp*` prefixes are the one gated MCP exception).
 
 ## 2. Prerequisites per action
 
 | :-- | Action | Prerequisites (all required, per session) |
 | :-- | :-- | :-- |
-| 1 | Any gated tool call | `skill` invoked for **brainstorming**, **grilling**, **build-with-exa** + a completed `read` of `~/.config/opencode/MEMORY.md` |
+| 1 | Any gated tool call | `skill` invoked for **brainstorming**, **grilling**, **build-with-exa**, **context7-mcp** + a completed `read` of `~/.config/opencode/MEMORY.md` |
 | 2 | `subagent` dispatch (additionally) | `skill` for **subagent-driven-development** + **dispatching-parallel-agents** + **prompt-engineering-patterns** + completed reads of `~/.config/opencode/memory/topics/workflow.md` **and** `workflow-git-pr.md` |
 | 3 | `subagent` with `agent: "general"` | Never allowed, any state |
 | 4 | `subagent` without `background: true` | Never allowed, any state (strict: `false` **and** omitted both deny) |
@@ -37,6 +39,7 @@ non-exa MCP tools.
 | 8 | `subagent` with `agent` missing/empty | Never allowed, any state (actionable deny; `agent: "general"` still gets the row-3 ban message) |
 | 9 | `subagent` fresh dispatch identical to an earlier one in the same session (same agent + prompt), count reaching 4 | Never allowed from the 4th identical fresh dispatch — 3 identical executions pass; per-session counter (djb2), continuations exempt — see "ext 6 wave" below |
 | 10 | `subagent` continuation of the same child session within one parent session, count passing 6 | Never allowed from the 7th continuation of the same child — 6 pass (increment-then-check on continuations that reach the check; denials by earlier gates never increment — cap denials and overrides do); a continuation prompt carrying `[chain-cap-override] <reason>` may pass beyond the cap — see "ext 6 wave" below |
+| 11 | Gated MCP tool starting with a skill-requirement prefix — `context7*` / `adb_mcp*` (ext 7.1, prefix match on the flat `<server>_<tool>` name) | `skill` for the mapped skill: `context7*` → **context7-mcp**, `adb_mcp*` → **adb-mcp**. Honest inertness note: the `context7` entry cannot fire while context7-mcp is mandatory (row 1 gates every gated call on it first) — kept in the table for message specificity + future-proofing if the mandatory set ever changes; the live enforcement of this row is the `adb_mcp` entry. Deliberately no mappings for zai-mcp-server / cloakbrowser / stitch / ssh-any / circumvention-corpus — no related skills exist (docs/BACKLOG.md) |
 
 Rationale (owner decision 2026-10-24): **prompt-engineering-patterns** is mandated on the
 dispatch path because dispatch briefs (subagent prompts) and agent-MCP prompts are prompts —
@@ -68,13 +71,13 @@ Exemptions (by design — don't block commands where free text cannot or should 
   lives in the session DB); no live Stitch calls existed at implementation time — a rename
   would silently disable the check (same degradation as the tool-description hint).
 
-Ordering: bans (incl. rows 3, 4, 8) → skill/memory gate → structure check → memory-mandate
-check → per-path counter — identical-dispatch breaker on the fresh path (row 9),
-continuation-chain cap on continuations (row 10). Compliance first — load the skill, then
-the brief is validated, then its memory mandate is verified, and only then does the per-path
-counter run, so compliance-teaching denies keep precedence: a gate/structure deny never
-consumes a counter, and a continuation increments the cap only after passing every earlier
-check.
+Ordering: bans (incl. rows 3, 4, 8) → skill/memory gate → MCP→skill gate (row 11) →
+structure check → memory-mandate check → per-path counter — identical-dispatch breaker on
+the fresh path (row 9), continuation-chain cap on continuations (row 10). Compliance first —
+load the skill, then the brief is validated, then its memory mandate is verified, and only
+then does the per-path counter run, so compliance-teaching denies keep precedence: a gate/
+structure deny never consumes a counter, and a continuation increments the cap only after
+passing every earlier check.
 
 Recording rules (what counts as compliance):
 
@@ -173,6 +176,7 @@ the procedural one.
 | 7 | `agent` missing/empty (§2 row 8) | `DENIED by dispatch-policy plugin: the dispatch is missing a specialized agent type (agent missing or empty). Pick a specialized agent type — e.g. backend-architect, code-reviewer, frontend-developer, trend-researcher (full list: opencode debug agents) — then re-run this exact call.` + trailer |
 | 8 | Identical fresh dispatch, count reaching 4 in one session (§2 row 9) | `DENIED by dispatch-policy plugin: identical dispatch sent <N> times in this session — runaway-loop guard on identical (agent, prompt) pairs. This deny is final for identical resends: differentiate the briefs (per-perspective prompts) or escalate to the owner.` — **no trailer, the deliberate exception to the "+ trailer" convention**: the trailer's "must be re-dispatched" wording contradicts the guard, and the message intentionally carries no "re-run this exact call" instruction (re-running is exactly what is denied). `<N>` is the live per-session count; the first deny fires at N = 4 |
 | 9 | Continuation chain of one child passing 6 in one session, no valid override marker (§2 row 10) | `DENIED by dispatch-policy plugin: this child-session continuation chain reached <N> continuations in one session (cap 6) — persistent-worker pumping of one child session is the anti-pattern the owner bans (2026-09-20; PR97/PR111). Start a FRESH agent instead and hand off state via a git branch + a structured brief. To continue once beyond the cap deliberately, add [chain-cap-override] <reason> to the continuation prompt, then re-run this exact call.` + trailer — here the re-run advice IS valid: the re-run carries the added marker, and this one dispatch then passes (the counter still increments). `<N>` is the live per-(parent, child) count; the first deny fires at N = 7 |
+| 10 | Gated MCP tool matching a skill-requirement prefix with the mapped skill not loaded, at a base-complete session (§2 row 11) | `DENIED by dispatch-policy plugin: MCP tool "<tool>" requires its skill first. Invoke `skill` with id "<skill>" — it defines the correct usage of this server's tools (<hint>) — then re-run this exact call.` + trailer — `<hint>` is per skill: context7-mcp → `for context7: resolve-library-id before query-docs`; adb-mcp → `for adb-mcp: read the accessibility tree before tapping`; unknown skill → `load it before driving this server`. At zero state this message never fires: the row-3 base deny keeps precedence (it already lists `skill "context7-mcp"`) |
 
 Shared trailer (verbatim, appended to every deny message **except row 8** — the
 identical-dispatch breaker deny is final for identical resends and deliberately omits both
@@ -188,7 +192,7 @@ above. It exists by owner decision to bias models toward actually following the 
 skills' requirements; the plugin's deterministic checks are exactly the ones in this spec.
 
 Missing-item format: `skill "<id>"` and `read of <path>` — e.g. at zero state a
-`shell` call lists the 3 skills + the MEMORY.md read and **not** the orchestrator
+`shell` call lists the 4 skills + the MEMORY.md read and **not** the orchestrator
 items; at base-complete a `subagent` call lists only the 3 orchestrator skills + 2
 workflow reads.
 
