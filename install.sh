@@ -16,10 +16,18 @@
 #              if it does not admit the symlink, the script falls back to an
 #              atomic copy automatically.
 #   --copy     skip the symlink attempt, install a byte-copy.
+#   --package  do NOT touch the live install; verify the package-directory layout
+#              (plugin-package/) loads via `opencode plugin list` from a temp
+#              project dir whose project config carries the object-form entry,
+#              then print the ready-to-paste global-config snippet for enabling
+#              CONFIGURABLE installs (options live in opencode.json; the
+#              file-symlink mode can never carry them). One mode at a time:
+#              file symlink AND plugins-array entry together may double-load the
+#              plugin (PRIMER injected twice — observed live 2026-11-07).
 #   verify     report installed mode + byte-parity + loader registration.
 #   uninstall  remove the live plugin file (gate disarms — documented unlock).
 #
-# Usage: ./install.sh [--copy | verify | uninstall]
+# Usage: ./install.sh [--copy | --package | verify | uninstall]
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -140,11 +148,45 @@ cmd_uninstall() {
   fi
 }
 
+cmd_package() {
+  local pkgdir="${REPO_DIR}/plugin-package"
+  [[ -f "$pkgdir/package.json" && -f "$pkgdir/index.ts" ]] || die "package layout missing: $pkgdir"
+  log "package mode: verifying the package entry loads (default file install untouched)"
+  if ( cd "$REPO_DIR" && bun -e "const m = await import('$pkgdir/index.ts'); if (!m.default || typeof m.default.setup !== 'function') process.exit(1)" ); then
+    log "package check: PASS — $pkgdir/index.ts imports and re-exports the plugin (default + setup)"
+  else
+    log "package check: FAIL — could not import $pkgdir/index.ts (run from the repo with bun)"
+    return 1
+  fi
+  cat <<EOF
+
+Ready-to-paste global config (one mode at a time — see the warning below):
+
+  // ~/.config/opencode/opencode.jsonc  (apply = opencode service restart)
+  {
+    "plugins": [
+      { "package": "$pkgdir", "options": { /* see docs/RULES.md §6 */ } }
+    ]
+  }
+
+WARNING (double-load, observed live 2026-11-07): the file-discovered plugin
+($DEST) and a plugins-array entry for the same id are BOTH loaded when they
+coexist — PRIMER injected twice, hooks duplicated. Switching modes = remove the
+symlink AND add the array entry in the SAME step, then 'opencode service restart'
+and verify primer-once. Default install mode (file symlink) is unchanged by this
+command; options can only ride on the object form above.
+
+End-to-end options verification (fresh process, live fail-closed check):
+  scripts/probe-options.sh
+EOF
+}
+
 case "${1:-install}" in
   install)    cmd_install symlink ;;
   --copy)     cmd_install copy ;;
+  --package)  cmd_package ;;
   verify)     cmd_verify ;;
   uninstall)  cmd_uninstall ;;
-  -h|--help)  sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
-  *)          die "unknown argument: $1 (use: install | --copy | verify | uninstall)" ;;
+  -h|--help)  sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  *)          die "unknown argument: $1 (use: install | --copy | --package | verify | uninstall)" ;;
 esac
