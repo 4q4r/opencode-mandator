@@ -10,9 +10,18 @@ import {
   fill,
   type BlockKey,
 } from "./defaults.ts"
+import { resolveOptions } from "./config.ts"
 
 // OpenCode V2 enforcement plugin — wave3-a2 + gate extensions 1-5 (owner decisions).
 // Deterministic enforcement of owner dispatch policy; the model cannot forget these.
+//
+// Flexibility Phase 1 (owner-approved, 2026-11-07): 11 enforcement knobs are resolved
+// per-setup from ctx.options via src/config.ts (hybrid failure semantics: an invalid
+// option fails THAT guard closed with a CONFIG-ERROR deny naming the option path;
+// invalid caps mean effective cap 1; empty skill lists are valid + warned; unknown keys
+// are warn + ignore; `null` caps turn the guard off). With NO options the resolved
+// config is byte-identical to the pre-Phase-1 hardcodes — the 80-test baseline suite is
+// the parity contract. Config problems surface as a system text part AFTER the PRIMER.
 //
 // Layers:
 //   1. Deny subagent dispatches with agent:"general" (owner ban) — actionable deny message.
@@ -74,7 +83,7 @@ import {
 //      [chain-cap-override] followed by a non-empty reason (regex
 //      /\[chain-cap-override\]\s*\S/i) — a deliberate, visible, one-shot escape with
 //      no config involvement. Fresh dispatches never touch this counter. Runs in the
-//      DISPATCH_TOOLS branch after the fresh-dispatch inner block, behind the
+//      DISPATCH_TOOLS branch (the resolved dispatch scope) after the fresh-dispatch inner block, behind the
 //      skill/memory gate (compliance-teaching denies keep precedence; a gate deny
 //      never consumes the cap). The deny carries the live count, the fresh-agent
 //      recovery, the marker instruction, and the shared COMPLIANCE_WARNING trailer
@@ -122,24 +131,33 @@ import {
 // byte-identical in DEFAULTS.primer.text (defaults.ts).
 const PRIMER = DEFAULTS.primer.text
 
-const DISPATCH_TOOLS = new Set(DEFAULTS.dispatch.tools)
-const FORBIDDEN_AGENT = DEFAULTS.dispatch.forbiddenAgents[0]
+// Flexibility Phase 1: the dispatch/gate/cap guard PARAMETERS resolve per-setup from
+// ctx.options (src/config.ts, hybrid failure semantics per owner rulings 2026-11-07).
+// The DEFAULT-derived sets below exist ONLY as the fail-closed fallback SCOPE for a
+// broken group (design §C(c)): when a group's options are invalid, the guard still
+// scopes its CONFIG-ERROR denies at the calls the default config would have covered —
+// it never silently widens or narrows the affected surface.
+const DEFAULT_DISPATCH_TOOLS = new Set(DEFAULTS.dispatch.tools)
 
 // --- Skill gate (wave3-a2 gate extensions 1-3; owner decisions Q1-Q4 + ext3) ---
 // Any GATED tool call is DENIED until the session meets the prerequisites. Global
 // (all projects/sessions/roles); only escape is OPENCODE_ENFORCE_OFF=1. The gated tool
-// names (with their live-DB verification notes) live in DEFAULTS.gates.tools.
-const GATED_TOOLS = new Set(DEFAULTS.gates.tools)
+// names (with their live-DB verification notes) live in DEFAULTS.gates.tools; the
+// Phase-1 option gates.tools overrides the exact-match set per setup (see isGatedTool
+// inside setup). The DEFAULT-derived set below is the broken-group fallback scope only.
+const DEFAULT_GATED_TOOLS = new Set(DEFAULTS.gates.tools)
 
 // ext 7.1 (owner decision "каждого агента", 2026-11-07): context7-mcp joins the
-// mandatory set — see DEFAULTS.skills.mandatory.
-const MANDATORY_SKILLS = DEFAULTS.skills.mandatory
+// mandatory set — see DEFAULTS.skills.mandatory. Phase 1: skills.mandatory /
+// skills.orchestrator are per-setup options (resolved inside setup); empty lists are
+// valid + warned and make the respective requirement inert (owner ruling 2026-11-07).
 
 // --- Gate extension 3: memory-read verification + orchestrator dispatch preflight ---
 // Base gate prerequisite: root MEMORY.md read in this session (owner-accepted proxy
 // for "memory consulted"). Dispatch gate (subagent only) additionally requires the
-// orchestrator skills and reads of both workflow memory files.
-const ORCHESTRATOR_SKILLS = DEFAULTS.skills.orchestrator
+// orchestrator skills and reads of both workflow memory files. The skill LISTS are
+// per-setup options (skills.mandatory / skills.orchestrator, Phase 1); the read targets
+// stay DEFAULTS-derived (gates.readTargets is a Phase-2 option).
 
 // Read-target keys/suffixes live in DEFAULTS.gates.readTargets (suffix match after
 // ~-expansion; both absolute and ~ forms occur in real read calls — 11 stored ~/ calls
@@ -272,15 +290,8 @@ function djb2(s: string): string {
 // collision pair (never stubbed — no behavior is faked through this seam).
 export const _djb2 = { fn: djb2 }
 
-function isGatedTool(tool: string): boolean {
-  if (GATED_TOOLS.has(tool)) return true
-  if (tool.includes(DEFAULTS.gates.exaSubstring)) return true // MCP exa tools appear as exa_<...>_exa
-  // ext 7.1: MCP servers with a skill requirement are gated tools — the base gate
-  // teaches the full mandatory list at zero state; the MCP-specific gate (below) layers
-  // the per-server requirement on top of a base-complete session.
-  if (DEFAULTS.gates.mcpRequirements.some((req) => tool.startsWith(req.prefix))) return true
-  return false
-}
+// Phase-1 per-guard config state lives inside setup() (resolved from ctx.options);
+// isGatedTool is defined there too — it needs the resolved gates scope.
 
 function markRead(sessionID: string, target: string): void {
   let set = readTargets.get(sessionID)
@@ -292,14 +303,20 @@ function markRead(sessionID: string, target: string): void {
 }
 
 // Returns exactly what a gated call is missing, human-readable, for the deny message.
-function gateMissing(sessionID: string, dispatch: boolean): string[] {
+// The skill lists are the resolved per-setup options (defaults keep today's behavior).
+function gateMissing(
+  sessionID: string,
+  dispatch: boolean,
+  mandatory: readonly string[],
+  orchestrator: readonly string[],
+): string[] {
   const missing: string[] = []
   const loaded = loadedSkills.get(sessionID)
   const reads = readTargets.get(sessionID)
-  for (const skill of MANDATORY_SKILLS) if (!loaded?.has(skill)) missing.push(`skill "${skill}"`)
+  for (const skill of mandatory) if (!loaded?.has(skill)) missing.push(`skill "${skill}"`)
   if (!reads?.has("memory")) missing.push(`read of ~/${READ_TARGET_SUFFIX.memory}`)
   if (dispatch) {
-    for (const skill of ORCHESTRATOR_SKILLS) if (!loaded?.has(skill)) missing.push(`skill "${skill}"`)
+    for (const skill of orchestrator) if (!loaded?.has(skill)) missing.push(`skill "${skill}"`)
     if (!reads?.has("workflow")) missing.push(`read of ~/${READ_TARGET_SUFFIX.workflow}`)
     if (!reads?.has("workflow-git-pr")) missing.push(`read of ~/${READ_TARGET_SUFFIX["workflow-git-pr"]}`)
   }
@@ -345,8 +362,10 @@ function denyMcpSkill(tool: string, skill: string): string {
 
 // ext 6.4: identical-dispatch circuit breaker — increment-then-check per session; the
 // deny fires when the count of identical fresh dispatches (same agent + prompt) reaches
-// IDENTICAL_CAP (3 identical executions pass, the 4th is denied). Owner approved 2026-10-25.
-const IDENTICAL_CAP = DEFAULTS.caps.identicalMax
+// the resolved identicalMax (3 identical executions pass at the default 4, the 4th is
+// denied). Phase 1: the cap is a per-setup option (caps.identicalMax); an invalid value
+// means EFFECTIVE CAP 1 + CONFIG-ERROR deny (owner ruling 2026-11-07), and `null` turns
+// the breaker off. Owner approved 2026-10-25.
 
 // Deliberate deltas vs the analyst sketch, owner decision (ext-6.4 brief): this deny
 // carries NO COMPLIANCE_WARNING trailer (its "must be re-dispatched" wording contradicts
@@ -359,26 +378,26 @@ function denyIdenticalLoop(n: number): string {
 }
 
 // ext 6.3: continuation-chain cap — increment-then-check per (parent session, child
-// session) pair; the deny fires when a child's continuation count passes CHAIN_CAP
-// (6 continuations pass, the 7th is denied). Denied calls still increment, and
-// Variant A overrides still increment: the counter tracks reality. Owner approved
-// 2026-10-25 (Variant A: constant cap + visible one-shot escape, no config knob).
-const CHAIN_CAP = DEFAULTS.caps.chainMax
+// session) pair; the deny fires when a child's continuation count passes the resolved
+// chainMax (6 continuations pass at the default, the 7th is denied). Phase 1: the cap is
+// a per-setup option (caps.chainMax); an invalid value means EFFECTIVE CAP 1 + CONFIG-
+// ERROR deny and `null` turns the cap off (owner rulings 2026-11-07). Denied calls still
+// increment, and Variant A overrides still increment: the counter tracks reality.
 
 // Variant A escape (owner requirement 2026-10-25: adjustable without config edits): a
 // continuation that would exceed the cap is ALLOWED iff the prompt carries the marker
-// followed by a NON-EMPTY reason — a bare marker does not unlock. Compiled from
-// DEFAULTS.caps.chainOverrideMarker.
-const CHAIN_OVERRIDE_RE = buildChainOverrideRe(DEFAULTS.caps.chainOverrideMarker)
+// followed by a NON-EMPTY reason — a bare marker does not unlock. Phase 1: the marker is
+// a per-setup option (caps.chainOverrideMarker) compiled to the same regex shape per
+// setup; an invalid marker fails the chain guard closed (the escape cannot be evaluated).
 
 // Unlike denyIdenticalLoop, this deny carries the COMPLIANCE_WARNING trailer and the
 // re-run instruction — here the re-run advice IS valid: re-running with the added
 // marker is exactly the sanctioned one-shot escape, alongside the primary recovery
 // (start a FRESH agent; the persistent-worker anti-pattern, owner bans 2026-09-20 /
 // PR97 / PR111).
-function denyContinuationChain(n: number): string {
+function denyContinuationChain(n: number, cap: number): string {
   return (
-    fill(DEFAULTS.messages.chainCapFail, { n: String(n), cap: String(CHAIN_CAP) }) +
+    fill(DEFAULTS.messages.chainCapFail, { n: String(n), cap: String(cap) }) +
     COMPLIANCE_WARNING
   )
 }
@@ -403,23 +422,86 @@ function enforcementDisabled(): boolean {
 export default Plugin.define({
   id: "dispatch-policy",
   async setup(ctx) {
+    // Flexibility Phase 1: resolve the enforcement knobs from ctx.options (absent ⇒
+    // pure defaults — the path the file-discovery install and the whole baseline suite
+    // exercise; design §C "zero options ⇒ defaults, zero problems"). CONFIG_PROBLEMS
+    // (errors + warnings) surface as a system text part AFTER the PRIMER; the per-guard
+    // error subsets drive the CONFIG-ERROR denies below.
+    const { resolved: CFG, problems: CONFIG_PROBLEMS } = resolveOptions(
+      (ctx as { options?: unknown } | undefined)?.options ?? {},
+    )
+
+    const dispatchBroken = CFG.dispatch.problems.length > 0
+    const dispatchScope = dispatchBroken ? DEFAULT_DISPATCH_TOOLS : new Set(CFG.dispatch.tools)
+    const forbiddenAgents = CFG.dispatch.forbiddenAgents
+    const gatesBroken = CFG.gates.problems.length > 0
+    const gatedScope = gatesBroken ? DEFAULT_GATED_TOOLS : new Set(CFG.gates.tools)
+    const exaSubstring = gatesBroken ? DEFAULTS.gates.exaSubstring : CFG.gates.exaSubstring
+    // Invalid cap ⇒ effective cap 1 (owner ruling); valid `null` ⇒ guard off.
+    const identicalCap = CFG.caps.identicalProblems.length > 0 ? 1 : CFG.caps.identicalMax
+    const chainCap = CFG.caps.chainMaxProblems.length > 0 ? 1 : CFG.caps.chainMax
+    const chainOverrideRe = buildChainOverrideRe(CFG.caps.chainOverrideMarker)
+
+    // CONFIG-ERROR deny (§C(c)): names the failing option path(s) verbatim, teaches the
+    // recovery (fix opencode.json + `opencode service restart` + re-run), and carries the
+    // shared trailer per the every-deny-except-the-identical-loop convention (§3).
+    function denyConfigError(groupProblems: readonly string[]): string {
+      return (
+        "DENIED by dispatch-policy plugin: [config-error] " +
+        groupProblems.join("; ") +
+        ". Fix the plugin options in opencode.json, run `opencode service restart`, then re-run this exact call." +
+        COMPLIANCE_WARNING
+      )
+    }
+
+    // Gated-set predicate over the RESOLVED gates config (Phase 1 knobs gates.tools +
+    // gates.exaSubstring; the ext-7.1 MCP prefix table stays DEFAULTS-derived — Phase 2).
+    // When the gates group is broken the scope falls back to the DEFAULT sets so the
+    // CONFIG-ERROR deny still hits exactly the formerly-gated calls (§C(c)).
+    function isGatedTool(tool: string): boolean {
+      if (gatedScope.has(tool)) return true
+      if (exaSubstring !== null && tool.includes(exaSubstring)) return true // MCP exa tools appear as exa_<...>_exa
+      // ext 7.1: MCP servers with a skill requirement are gated tools — the base gate
+      // teaches the full mandatory list at zero state; the MCP-specific gate (below) layers
+      // the per-server requirement on top of a base-complete session.
+      if (DEFAULTS.gates.mcpRequirements.some((req) => tool.startsWith(req.prefix))) return true
+      return false
+    }
+
     // Layers 1+2: intercept subagent dispatches before execution.
     await ctx.tool.hook("execute.before", (event) => {
       if (enforcementDisabled()) return
       const input = (event.input ?? {}) as Record<string, unknown>
-      if (DISPATCH_TOOLS.has(event.tool)) {
+      if (dispatchScope.has(event.tool)) {
+        // §C(c): a broken dispatch guard denies affected calls BEFORE evaluating any
+        // ban — the ban parameters themselves may be the broken values.
+        if (dispatchBroken) throw new Error(denyConfigError(CFG.dispatch.problems))
         // ext 6.7: actionable deny for missing/empty agent, BEFORE the general ban —
         // the message teaches agent selection. "general" is a non-empty string, so the
-        // ban below still wins for agent === "general".
-        if (typeof input.agent !== "string" || input.agent.trim() === "") throw new Error(DENY_AGENT_MISSING)
-        if (input.agent === FORBIDDEN_AGENT) throw new Error(denyGeneral(input.agent))
-        if (input.background !== true) throw new Error(DENY_BACKGROUND)
+        // ban below still wins for agent === "general". requireAgent=false (option)
+        // disables this deny (layer 2 inert, design §A #4).
+        if (CFG.dispatch.requireAgent && (typeof input.agent !== "string" || input.agent.trim() === ""))
+          throw new Error(DENY_AGENT_MISSING)
+        // Phase 1: forbiddenAgents is a LIST — deny when the agent matches ANY entry.
+        if (typeof input.agent === "string" && forbiddenAgents.includes(input.agent))
+          throw new Error(denyGeneral(input.agent))
+        if (CFG.dispatch.requireBackground && input.background !== true) throw new Error(DENY_BACKGROUND)
       }
       // Skill + memory gate: gated actions wait until this session loaded the
       // mandatory skills and read root MEMORY.md; dispatches additionally need the
       // orchestrator preflight. Deny lists exactly what is missing.
       if (isGatedTool(event.tool)) {
-        const missing = gateMissing(event.sessionID, DISPATCH_TOOLS.has(event.tool))
+        // §C(c): a broken skills/gates group denies gated calls with the CONFIG-ERROR
+        // naming the failing paths — the compliance prerequisites cannot be evaluated
+        // against untrusted parameters. (Dispatch bans above keep precedence.)
+        const gateConfigProblems = [...CFG.skills.problems, ...CFG.gates.problems]
+        if (gateConfigProblems.length > 0) throw new Error(denyConfigError(gateConfigProblems))
+        const missing = gateMissing(
+          event.sessionID,
+          dispatchScope.has(event.tool),
+          CFG.skills.mandatory,
+          CFG.skills.orchestrator,
+        )
         if (missing.length > 0) {
           throw new Error(
             fill(DEFAULTS.messages.gateMissing, { missing: missing.join("; ") }) + COMPLIANCE_WARNING,
@@ -440,7 +522,7 @@ export default Plugin.define({
       // orchestrator loads prompt-engineering-patterns, THEN the brief is checked).
       // Subagent: every fresh dispatch must carry a structured brief; continuations
       // (sessionID present) are exempt — the original dispatch already passed.
-      if (DISPATCH_TOOLS.has(event.tool)) {
+      if (dispatchScope.has(event.tool)) {
         if (input.sessionID === undefined) {
           const prompt = typeof input.prompt === "string" ? input.prompt : ""
           const missing = missingBlocks(prompt, SUBAGENT_PROFILE)
@@ -479,9 +561,19 @@ export default Plugin.define({
             pair = { agent: dispatchAgent, prompt, count: 0 }
             bucket.push(pair)
           }
-          // Increment-then-check, unchanged: a denied dispatch still counts.
+          // Increment-then-check, unchanged: a denied dispatch still counts. Phase 1:
+          // against the RESOLVED cap — caps.identicalMax=null turns the breaker off;
+          // an invalid value means effective cap 1 with the CONFIG-ERROR deny
+          // (compliance-teaching denies above keep precedence: the structure and
+          // memory-mandate checks still run first).
           pair.count += 1
-          if (pair.count >= IDENTICAL_CAP) throw new Error(denyIdenticalLoop(pair.count))
+          if (identicalCap !== null && pair.count >= identicalCap) {
+            throw new Error(
+              CFG.caps.identicalProblems.length > 0
+                ? denyConfigError(CFG.caps.identicalProblems)
+                : denyIdenticalLoop(pair.count),
+            )
+          }
         } else {
           // ext 6.3: continuation-chain cap — CONTINUATIONS only (input.sessionID
           // present), after the fresh-dispatch inner block. Bans and the skill/memory
@@ -501,8 +593,15 @@ export default Plugin.define({
           // the cap).
           const count = (perChildCounts.get(childID) ?? 0) + 1
           perChildCounts.set(childID, count)
-          if (count > CHAIN_CAP && !CHAIN_OVERRIDE_RE.test(prompt)) {
-            throw new Error(denyContinuationChain(count))
+          // Phase 1: against the RESOLVED cap — caps.chainMax=null turns the cap off;
+          // an invalid value means effective cap 1 with the CONFIG-ERROR deny. An
+          // invalid marker also fails this guard closed: the one-shot escape cannot be
+          // evaluated, so an over-cap continuation is denied with the CONFIG-ERROR
+          // naming the marker path instead of silently allowing or denying unteachably.
+          if (chainCap !== null && count > chainCap) {
+            if (CFG.caps.chainMaxProblems.length > 0) throw new Error(denyConfigError(CFG.caps.chainMaxProblems))
+            if (CFG.caps.markerProblems.length > 0) throw new Error(denyConfigError(CFG.caps.markerProblems))
+            if (!chainOverrideRe.test(prompt)) throw new Error(denyContinuationChain(count, chainCap))
           }
         }
       } else if (STITCH_PROMPT_TOOLS.has(event.tool)) {
@@ -544,11 +643,15 @@ export default Plugin.define({
       }
     })
 
-    // Layer 4: policy hint at tool-selection time. Missing tool IDs are ignored
-    // by the editor (documented behavior), so a rename degrades to layers 1-3 only.
+    // Layer 4: policy hint at tool-selection time. Phase 1: the hinted tool is the
+    // FIRST resolved dispatch tool (defaults → "subagent", unchanged; dispatch.tools=[]
+    // → no dispatch surface, no hint). Missing tool IDs are ignored by the editor
+    // (documented behavior), so a rename degrades to layers 1-3 only.
     await ctx.tool.transform((editor) => {
       if (enforcementDisabled()) return
-      editor.update(DEFAULTS.dispatch.tools[0], (tool) => {
+      const target = CFG.dispatch.tools[0]
+      if (target === undefined) return
+      editor.update(target, (tool) => {
         tool.description = tool.description + DESCRIPTION_HINT
       })
     })
@@ -580,9 +683,16 @@ export default Plugin.define({
 
     // Layer 3: PRIMER as a system text part before every agent model request
     // (survives compaction automatically — system parts are reassembled per request).
+    // Flexibility Phase 1: when the resolved options carry problems (errors AND
+    // warnings), an additional system text part naming them is pushed AFTER the PRIMER
+    // (owner-approved surfacing channel; the PRIMER part itself is byte-identical, and
+    // with zero problems nothing extra is pushed).
     await ctx.session.hook("context", (event) => {
       if (enforcementDisabled()) return
       event.system.push({ type: "text", text: PRIMER })
+      if (CONFIG_PROBLEMS.length > 0) {
+        event.system.push({ type: "text", text: `dispatch-policy config problems: ${CONFIG_PROBLEMS.join("; ")}` })
+      }
     })
   },
 })
