@@ -8,7 +8,6 @@ import {
   buildChainOverrideRe,
   buildMemoryMandateRe,
   fill,
-  type BlockKey,
 } from "./defaults.ts"
 import { resolveOptions } from "./config.ts"
 
@@ -19,9 +18,15 @@ import { resolveOptions } from "./config.ts"
 // per-setup from ctx.options via src/config.ts (hybrid failure semantics: an invalid
 // option fails THAT guard closed with a CONFIG-ERROR deny naming the option path;
 // invalid caps mean effective cap 1; empty skill lists are valid + warned; unknown keys
-// are warn + ignore; `null` caps turn the guard off). With NO options the resolved
-// config is byte-identical to the pre-Phase-1 hardcodes — the 80-test baseline suite is
-// the parity contract. Config problems surface as a system text part AFTER the PRIMER.
+// are warn + ignore; `null` caps turn the guard off). Flexibility Phase 2
+// (owner-approved, 2026-11-07) wires the remaining enforcement-surface options (+10;
+// 26 total): gates.mcpRequirements / gates.readTargets / gates.memoryMandatePattern,
+// structure.blocks (invalid regex ⇒ that structure guard fails closed with a
+// CONFIG-ERROR naming the path) / structure.subagentProfile / structure.stitchProfile
+// (cross-validated against blocks) / structure.stitchPromptTools / structure.stitchMinPrompt,
+// paths.memoryIndex / paths.memoryTree. With NO options the resolved config is
+// byte-identical to the pre-migration hardcodes — the baseline test suite is the
+// parity contract. Config problems surface as a system text part AFTER the PRIMER.
 //
 // Layers:
 //   1. Deny subagent dispatches with agent:"general" (owner ban) — actionable deny message.
@@ -89,7 +94,8 @@ import { resolveOptions } from "./config.ts"
 //      recovery, the marker instruction, and the shared COMPLIANCE_WARNING trailer
 //      (here the re-run advice IS valid — re-run with the marker).
 //  14. MCP→skill gate (ext 7.1): an MCP tool whose server has a related skill is DENIED
-//      until that skill is loaded in the session. DEFAULTS.gates.mcpRequirements matches by
+//      until that skill is loaded in the session. gates.mcpRequirements (a Phase-2
+//      option; defaults to today's table) matches by
 //      PREFIX on the flat MCP tool name (V2 convention "<server>_<tool>", unsupported
 //      chars → "_": server "adb-mcp" → prefix "adb_mcp_"; the context7 tools are
 //      "context7_resolve_library_id" / "context7_query_docs"). The prefixes also extend
@@ -139,6 +145,15 @@ const PRIMER = DEFAULTS.primer.text
 // it never silently widens or narrows the affected surface.
 const DEFAULT_DISPATCH_TOOLS = new Set(DEFAULTS.dispatch.tools)
 
+// ext 7.1: MCP→skill requirements — an MCP tool may not be driven without its related
+// skill. Flexibility Phase 2: the prefix table is a per-setup option (gates.mcpRequirements,
+// resolved inside setup; per-skill hints stay keyed by skillId in
+// DEFAULTS.messages.mcpSkillHints — an unknown skill gets the generic hint). The
+// DEFAULT-derived table below is the broken-group fallback scope only (broken-group
+// scoping: a broken gates group still scopes its CONFIG-ERROR denies at the calls the
+// default config would have covered).
+const DEFAULT_MCP_REQUIREMENTS = DEFAULTS.gates.mcpRequirements
+
 // --- Skill gate (wave3-a2 gate extensions 1-3; owner decisions Q1-Q4 + ext3) ---
 // Any GATED tool call is DENIED until the session meets the prerequisites. Global
 // (all projects/sessions/roles); only escape is OPENCODE_ENFORCE_OFF=1. The gated tool
@@ -153,18 +168,14 @@ const DEFAULT_GATED_TOOLS = new Set(DEFAULTS.gates.tools)
 // valid + warned and make the respective requirement inert (owner ruling 2026-11-07).
 
 // --- Gate extension 3: memory-read verification + orchestrator dispatch preflight ---
-// Base gate prerequisite: root MEMORY.md read in this session (owner-accepted proxy
-// for "memory consulted"). Dispatch gate (subagent only) additionally requires the
-// orchestrator skills and reads of both workflow memory files. The skill LISTS are
-// per-setup options (skills.mandatory / skills.orchestrator, Phase 1); the read targets
-// stay DEFAULTS-derived (gates.readTargets is a Phase-2 option).
-
-// Read-target keys/suffixes live in DEFAULTS.gates.readTargets (suffix match after
-// ~-expansion; both absolute and ~ forms occur in real read calls — 11 stored ~/ calls
-// verified in the session DB). Demand strings in gateMissing derive from the suffixes.
-const READ_TARGET_SUFFIX: Record<string, string> = Object.fromEntries(
-  DEFAULTS.gates.readTargets.map((target) => [target.key, target.suffix]),
-)
+// Base gate prerequisite: the "memory"-keyed read target read in this session
+// (owner-accepted proxy for "memory consulted"). Dispatch gate (subagent only)
+// additionally requires the orchestrator skills (ext 4: dispatch briefs and agent-MCP
+// prompts are prompts) and reads of every non-memory read target. Flexibility Phase 2:
+// the read-target table is a per-setup option (gates.readTargets, resolved inside
+// setup) — the base gate demands the "memory" key, the dispatch path demands the rest.
+// The DEFAULT-derived table below is the broken-group fallback scope only.
+const DEFAULT_READ_TARGETS = DEFAULTS.gates.readTargets
 
 // --- Gate extension 5: deterministic prompt-structure check (owner decision) ---
 // Source of truth: the prompt-engineering-patterns skill — references/system-prompts.md
@@ -174,26 +185,14 @@ const READ_TARGET_SUFFIX: Record<string, string> = Object.fromEntries(
 // Output). The check is keyword-presence per block, tolerant to header forms
 // ("## Task", "**Task:**", "Task:") and to Russian block names; it is the honest,
 // deterministic subset of "no bad prompts" — it cannot judge content quality, only
-// structure (the COMPLIANCE WARNING covers the rest). Block vocabulary, matchers
-// (compiled from DEFAULTS.structure.blocks pattern sources with the original flag "i"),
-// profiles, and their rationale live in DEFAULTS.structure.
-const BLOCKS = buildBlocks(DEFAULTS.structure.blocks)
-const SUBAGENT_PROFILE: ReadonlyArray<BlockKey> = DEFAULTS.structure.subagentProfile
-const STITCH_PROFILE: ReadonlyArray<BlockKey> = DEFAULTS.structure.stitchProfile
-// Stitch free-text prompt tools + the 120-char length floor live in
-// DEFAULTS.structure.stitchPromptTools / stitchMinPrompt.
-const STITCH_PROMPT_TOOLS = new Set(DEFAULTS.structure.stitchPromptTools)
-const STITCH_MIN_PROMPT = DEFAULTS.structure.stitchMinPrompt
-
-function missingBlocks(prompt: string, profile: ReadonlyArray<BlockKey>): string[] {
-  return profile.filter((key) => !BLOCKS[key].re.test(prompt)).map((key) => BLOCKS[key].name)
-}
-
-// --- ext 6.1: memory-mandate keyword in fresh dispatch briefs (owner hard dispatch
-// protocol 2026-10-10) — the pattern source lives in
-// DEFAULTS.gates.memoryMandatePattern, compiled with the original flags "iu" (the
-// `\p{L}`-under-`u` requirement for the RU forms is documented at the builder).
-const MEMORY_MANDATE_RE = buildMemoryMandateRe(DEFAULTS.gates.memoryMandatePattern)
+// structure (the COMPLIANCE WARNING covers the rest). Flexibility Phase 2: the block
+// vocabulary (structure.blocks — pattern sources compiled per setup), both profiles,
+// the Stitch tool surface, and the length floor are per-setup options (resolved inside
+// setup, cross-validated by the resolver). The DEFAULT-derived set below is the
+// broken-group fallback scope only (broken-group scoping: a broken structure/stitch
+// guard still scopes its CONFIG-ERROR denies at the calls the default config would
+// have covered).
+const DEFAULT_STITCH_TOOLS = new Set(DEFAULTS.structure.stitchPromptTools)
 
 // `~` and `~/`-prefixed paths are expanded against the real home directory; both forms
 // occur in real traffic (11 stored ~/ read calls verified in the session DB). Shared by
@@ -204,31 +203,39 @@ function expandTilde(p: string): string {
   return p
 }
 
-function classifyRead(p: unknown): string | undefined {
+// ext 3 recording: classify a read call's path against the RESOLVED read-target table
+// (suffix match after ~-expansion; both absolute and ~ forms occur in real read calls —
+// 11 stored ~/ calls verified in the session DB).
+function classifyRead(
+  p: unknown,
+  targets: ReadonlyArray<{ key: string; suffix: string }>,
+): string | undefined {
   if (typeof p !== "string" || !p) return undefined
   const s = expandTilde(p)
-  for (const target of DEFAULTS.gates.readTargets) {
+  for (const target of targets) {
     if (s === target.suffix || s.endsWith("/" + target.suffix)) return target.key
   }
   return undefined
 }
 
-// ext 6.6 (fix round 1): global memory targets — the memory tree (topics/, projects/) and the
-// root MEMORY.md index. Matching is normalize + home-anchored containment: the previous
-// substring/ends-with match had (a) a BYPASS — absolute dot-segment paths like
+// ext 6.6 (fix round 1): global memory targets — the memory tree (topics/, projects/)
+// and the root memory index. Matching is normalize + home-anchored containment: the
+// previous substring/ends-with match had (a) a BYPASS — absolute dot-segment paths like
 // ~/.config/opencode/./MEMORY.md matched no pattern, so a whole-file write over the real
 // MEMORY.md slipped past the guard — and (b) FALSE POSITIVES — /tmp/.config/opencode/memory/…
 // counted as memory though the documented target is the GLOBAL tree. Canonical rule: the path
-// resolves to exactly the home-anchored root MEMORY.md, or lands inside the home-anchored
+// resolves to exactly the home-anchored index path, or lands inside the home-anchored
 // memory tree (path.relative semantics: relative === "" or not ".."-prefixed and not
-// absolute). Case-sensitive by design (Linux install).
-const MEMORY_INDEX_PATH = expandTilde(DEFAULTS.paths.memoryIndex)
-const MEMORY_TREE_PATH = expandTilde(DEFAULTS.paths.memoryTree)
+// absolute). Case-sensitive by design (Linux install). Flexibility Phase 2: both paths
+// are per-setup options (paths.memoryIndex / paths.memoryTree, resolved inside setup);
+// the DEFAULT-derived constants below are the broken-group fallback scope only.
+const DEFAULT_MEMORY_INDEX_PATH = expandTilde(DEFAULTS.paths.memoryIndex)
+const DEFAULT_MEMORY_TREE_PATH = expandTilde(DEFAULTS.paths.memoryTree)
 
-function isGlobalMemoryPath(p: string): boolean {
+function isGlobalMemoryPath(p: string, indexPath: string, treePath: string): boolean {
   const resolved = path.resolve(p)
-  if (resolved === MEMORY_INDEX_PATH) return true
-  const rel = path.relative(MEMORY_TREE_PATH, resolved)
+  if (resolved === indexPath) return true
+  const rel = path.relative(treePath, resolved)
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel))
 }
 
@@ -303,22 +310,26 @@ function markRead(sessionID: string, target: string): void {
 }
 
 // Returns exactly what a gated call is missing, human-readable, for the deny message.
-// The skill lists are the resolved per-setup options (defaults keep today's behavior).
+// The skill lists and the read-target table are the resolved per-setup options
+// (defaults keep today's behavior). Base gate: the mandatory skills + the "memory"-keyed
+// read target; dispatch path: the orchestrator skills + every other read target.
 function gateMissing(
   sessionID: string,
   dispatch: boolean,
   mandatory: readonly string[],
   orchestrator: readonly string[],
+  targets: ReadonlyArray<{ key: string; suffix: string }>,
 ): string[] {
   const missing: string[] = []
   const loaded = loadedSkills.get(sessionID)
   const reads = readTargets.get(sessionID)
   for (const skill of mandatory) if (!loaded?.has(skill)) missing.push(`skill "${skill}"`)
-  if (!reads?.has("memory")) missing.push(`read of ~/${READ_TARGET_SUFFIX.memory}`)
+  const base = targets.find((t) => t.key === "memory")
+  const rest = targets.filter((t) => t.key !== "memory")
+  if (base && !reads?.has("memory")) missing.push(`read of ~/${base.suffix}`)
   if (dispatch) {
     for (const skill of orchestrator) if (!loaded?.has(skill)) missing.push(`skill "${skill}"`)
-    if (!reads?.has("workflow")) missing.push(`read of ~/${READ_TARGET_SUFFIX.workflow}`)
-    if (!reads?.has("workflow-git-pr")) missing.push(`read of ~/${READ_TARGET_SUFFIX["workflow-git-pr"]}`)
+    for (const target of rest) if (!reads?.has(target.key)) missing.push(`read of ~/${target.suffix}`)
   }
   return missing
 }
@@ -402,8 +413,21 @@ function denyContinuationChain(n: number, cap: number): string {
   )
 }
 
-function denyStructure(target: string, missing: string[], profile: ReadonlyArray<BlockKey>): string {
-  const guide = profile.map((key) => BLOCKS[key].name).join(" / ")
+function missingBlocks(
+  prompt: string,
+  profile: ReadonlyArray<string>,
+  blocks: Record<string, { name: string; re: RegExp }>,
+): string[] {
+  return profile.filter((key) => !blocks[key]?.re.test(prompt)).map((key) => blocks[key]!.name)
+}
+
+function denyStructure(
+  target: string,
+  missing: string[],
+  profile: ReadonlyArray<string>,
+  blocks: Record<string, { name: string; re: RegExp }>,
+): string {
+  const guide = profile.map((key) => blocks[key]!.name).join(" / ")
   return (
     fill(DEFAULTS.messages.structureFail, {
       target,
@@ -437,6 +461,34 @@ export default Plugin.define({
     const gatesBroken = CFG.gates.problems.length > 0
     const gatedScope = gatesBroken ? DEFAULT_GATED_TOOLS : new Set(CFG.gates.tools)
     const exaSubstring = gatesBroken ? DEFAULTS.gates.exaSubstring : CFG.gates.exaSubstring
+    // Phase 2: the MCP prefix table + read targets resolve per-setup; when the gates
+    // group is broken they fall back to the DEFAULT tables (broken-group scoping — the
+    // CONFIG-ERROR deny fires before any of these values is used for a decision).
+    const mcpRequirements = gatesBroken ? DEFAULT_MCP_REQUIREMENTS : CFG.gates.mcpRequirements
+    const readTargetTable = gatesBroken ? DEFAULT_READ_TARGETS : CFG.gates.readTargets
+    // ext 6.1 sub-guard: an invalid gates.memoryMandatePattern fails ONLY the fresh
+    // dispatch memory-mandate check closed (its own CONFIG-ERROR at its own position);
+    // the base skill/memory gate stays healthy.
+    const memoryMandateBroken = CFG.gates.memoryMandateProblems.length > 0
+    const memoryMandateRe = memoryMandateBroken
+      ? null
+      : buildMemoryMandateRe(CFG.gates.memoryMandatePattern)
+    // Phase 2: structure group — blocks/profiles errors break the structure check for
+    // BOTH surfaces (fresh dispatches + Stitch); stitch-knob errors break only the
+    // Stitch surface. A broken guard denies at its own position (compliance-teaching
+    // denies keep precedence) and never falls back to unvalidated passing.
+    const structureBroken = CFG.structure.problems.length > 0
+    const stitchBroken = CFG.structure.stitchProblems.length > 0
+    const blocks = structureBroken ? null : buildBlocks(CFG.structure.blocks)
+    const subagentProfile = CFG.structure.subagentProfile
+    const stitchProfile = CFG.structure.stitchProfile
+    const stitchScope = stitchBroken ? DEFAULT_STITCH_TOOLS : new Set(CFG.structure.stitchPromptTools)
+    const stitchMinPrompt = CFG.structure.stitchMinPrompt
+    // Phase 2: paths group — an invalid path fails the ext-6.6 memory-overwrite guard
+    // closed, scoped at the calls the DEFAULT topology would have covered.
+    const pathsBroken = CFG.paths.problems.length > 0
+    const memoryIndexPath = expandTilde(CFG.paths.memoryIndex)
+    const memoryTreePath = expandTilde(CFG.paths.memoryTree)
     // Invalid cap ⇒ effective cap 1 (owner ruling); valid `null` ⇒ guard off.
     const identicalCap = CFG.caps.identicalProblems.length > 0 ? 1 : CFG.caps.identicalMax
     const chainCap = CFG.caps.chainMaxProblems.length > 0 ? 1 : CFG.caps.chainMax
@@ -455,8 +507,8 @@ export default Plugin.define({
     }
 
     // Gated-set predicate over the RESOLVED gates config (Phase 1 knobs gates.tools +
-    // gates.exaSubstring; the ext-7.1 MCP prefix table stays DEFAULTS-derived — Phase 2).
-    // When the gates group is broken the scope falls back to the DEFAULT sets so the
+    // gates.exaSubstring; Phase 2 knob gates.mcpRequirements — the prefix table). When
+    // the gates group is broken the scope falls back to the DEFAULT sets so the
     // CONFIG-ERROR deny still hits exactly the formerly-gated calls (§C(c)).
     function isGatedTool(tool: string): boolean {
       if (gatedScope.has(tool)) return true
@@ -464,7 +516,7 @@ export default Plugin.define({
       // ext 7.1: MCP servers with a skill requirement are gated tools — the base gate
       // teaches the full mandatory list at zero state; the MCP-specific gate (below) layers
       // the per-server requirement on top of a base-complete session.
-      if (DEFAULTS.gates.mcpRequirements.some((req) => tool.startsWith(req.prefix))) return true
+      if (mcpRequirements.some((req) => tool.startsWith(req.prefix))) return true
       return false
     }
 
@@ -501,6 +553,7 @@ export default Plugin.define({
           dispatchScope.has(event.tool),
           CFG.skills.mandatory,
           CFG.skills.orchestrator,
+          readTargetTable,
         )
         if (missing.length > 0) {
           throw new Error(
@@ -511,8 +564,9 @@ export default Plugin.define({
         // structure chain. A base-complete session driving an MCP tool without its
         // related skill gets the per-server deny with the usage hint. (A zero-state MCP
         // call never reaches this loop: the base deny above keeps precedence and already
-        // lists context7-mcp among the mandatory skills.)
-        for (const { prefix, skill } of DEFAULTS.gates.mcpRequirements) {
+        // lists the mandatory skills.) Phase 2: the table is the resolved
+        // gates.mcpRequirements option; per-skill hints stay keyed by skillId.
+        for (const { prefix, skill } of mcpRequirements) {
           if (event.tool.startsWith(prefix) && !loadedSkills.get(event.sessionID)?.has(skill)) {
             throw new Error(denyMcpSkill(event.tool, skill))
           }
@@ -525,16 +579,23 @@ export default Plugin.define({
       if (dispatchScope.has(event.tool)) {
         if (input.sessionID === undefined) {
           const prompt = typeof input.prompt === "string" ? input.prompt : ""
-          const missing = missingBlocks(prompt, SUBAGENT_PROFILE)
+          // §C(c) Phase 2: a broken structure guard denies at its own position (after
+          // the gate, before memory-mandate) — the check cannot run, so nothing passes
+          // unvalidated. Zero-state calls still receive the normal gate deny above.
+          if (structureBroken || blocks === null) throw new Error(denyConfigError(CFG.structure.problems))
+          const missing = missingBlocks(prompt, subagentProfile, blocks)
           if (missing.length > 0) {
             const prefix = prompt === "" ? "The dispatch prompt is missing or empty. " : ""
-            throw new Error(prefix + denyStructure("subagent dispatch", missing, SUBAGENT_PROFILE))
+            throw new Error(prefix + denyStructure("subagent dispatch", missing, subagentProfile, blocks))
           }
           // ext 6.1: fresh briefs must mandate reading global memory — AFTER the
           // structure check (ordering: bans → skill/memory gate → structure →
           // memory-mandate). Continuations (sessionID present) are exempt: the original
-          // dispatch already passed.
-          if (!MEMORY_MANDATE_RE.test(prompt)) throw new Error(DENY_MEMORY_MANDATE)
+          // dispatch already passed. Phase 2: an invalid gates.memoryMandatePattern
+          // fails ONLY this check closed (its own CONFIG-ERROR at its own position).
+          if (memoryMandateBroken || memoryMandateRe === null)
+            throw new Error(denyConfigError(CFG.gates.memoryMandateProblems))
+          if (!memoryMandateRe.test(prompt)) throw new Error(DENY_MEMORY_MANDATE)
           // ext 6.4: identical-dispatch circuit breaker — LAST check on the fresh path,
           // after the structure and memory-mandate checks (compliance-teaching denies
           // keep precedence: a loop of malformed briefs keeps receiving the structure
@@ -604,12 +665,18 @@ export default Plugin.define({
             if (!chainOverrideRe.test(prompt)) throw new Error(denyContinuationChain(count, chainCap))
           }
         }
-      } else if (STITCH_PROMPT_TOOLS.has(event.tool)) {
+      } else if (stitchScope.has(event.tool)) {
+        // §C(c) Phase 2: broken structure blocks/profiles fail BOTH surfaces closed;
+        // broken stitch knobs (tools list / floor) fail only this surface. The combined
+        // CONFIG-ERROR names every failing path.
+        const stitchConfigProblems = [...CFG.structure.problems, ...CFG.structure.stitchProblems]
+        if (stitchConfigProblems.length > 0 || blocks === null)
+          throw new Error(denyConfigError(stitchConfigProblems))
         const prompt = typeof input.prompt === "string" ? input.prompt : ""
-        if (prompt.length >= STITCH_MIN_PROMPT) {
-          const missing = missingBlocks(prompt, STITCH_PROFILE)
+        if (prompt.length >= stitchMinPrompt) {
+          const missing = missingBlocks(prompt, stitchProfile, blocks)
           if (missing.length > 0) {
-            throw new Error(denyStructure(`MCP tool "${event.tool}"`, missing, STITCH_PROFILE))
+            throw new Error(denyStructure(`MCP tool "${event.tool}"`, missing, stitchProfile, blocks))
           }
         }
       } else if (event.tool === "write") {
@@ -630,7 +697,14 @@ export default Plugin.define({
               : undefined
         if (raw !== undefined) {
           const p = path.resolve(expandTilde(raw))
-          if (isGlobalMemoryPath(p)) {
+          // §C(c) Phase 2: a broken paths guard CONFIG-ERRORs on the calls the DEFAULT
+          // topology would have covered (broken-group scoping — the broken values are
+          // never used to widen or narrow the surface); other writes pass.
+          if (pathsBroken) {
+            if (isGlobalMemoryPath(p, DEFAULT_MEMORY_INDEX_PATH, DEFAULT_MEMORY_TREE_PATH)) {
+              throw new Error(denyConfigError(CFG.paths.problems))
+            }
+          } else if (isGlobalMemoryPath(p, memoryIndexPath, memoryTreePath)) {
             let exists = false
             try {
               exists = _testStat.fn(p)
@@ -676,7 +750,10 @@ export default Plugin.define({
         return
       }
       if (event.tool === "read") {
-        const target = classifyRead(input.path)
+        // Phase 2: classification runs against the resolved read-target table (the
+        // DEFAULT table while the gates group is broken — recording keeps its semantics
+        // and the gate's CONFIG-ERROR never lets an unreadable prerequisite pass).
+        const target = classifyRead(input.path, readTargetTable)
         if (target) markRead(event.sessionID, target)
       }
     })

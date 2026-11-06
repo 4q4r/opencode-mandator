@@ -52,19 +52,20 @@ export function buildChainOverrideRe(marker: string): RegExp {
   return new RegExp(`${escapeRegExp(marker)}\\s*\\S`, "i")
 }
 
-// §A structure.blocks → compiled block matchers. Compiled with the original flag "i";
-// the check is keyword-presence per block, tolerant to header forms ("## Task",
-// "**Task:**", "Task:") and to Russian block names — the honest, deterministic subset of
-// "no bad prompts" (it cannot judge content quality, only structure; the COMPLIANCE
-// WARNING covers the rest). Source of truth: the prompt-engineering-patterns skill —
-// references/system-prompts.md ("Effective System Prompt Structure") and the template
-// library (every generation template carries Task / Context / Requirements /
-// Constraints / Output).
+// §A structure.blocks → compiled block matchers. Keys are plain strings (Phase 2 allows
+// custom block vocabularies — the DEFAULTS record uses the five canonical keys).
+// Compiled with the original flag "i"; the check is keyword-presence per block,
+// tolerant to header forms ("## Task", "**Task:**", "Task:") and to Russian block
+// names — the honest, deterministic subset of "no bad prompts" (it cannot judge
+// content quality, only structure; the COMPLIANCE WARNING covers the rest). Source of
+// truth: the prompt-engineering-patterns skill — references/system-prompts.md
+// ("Effective System Prompt Structure") and the template library (every generation
+// template carries Task / Context / Requirements / Constraints / Output).
 export function buildBlocks(
-  blocks: Record<BlockKey, { name: string; pattern: string }>,
-): Record<BlockKey, { name: string; re: RegExp }> {
-  const out = {} as Record<BlockKey, { name: string; re: RegExp }>
-  for (const key of Object.keys(blocks) as BlockKey[]) {
+  blocks: Record<string, { name: string; pattern: string }>,
+): Record<string, { name: string; re: RegExp }> {
+  const out = {} as Record<string, { name: string; re: RegExp }>
+  for (const key of Object.keys(blocks)) {
     out[key] = { name: blocks[key].name, re: new RegExp(blocks[key].pattern, "i") }
   }
   return out

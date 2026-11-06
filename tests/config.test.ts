@@ -11,9 +11,9 @@
 // plugin.setup(ctx) per test with ctx.options set, so every knob test pins a real
 // deny/allow behavior through the hooks. Session IDs are unique per test (the per-session
 // Maps live at module scope and outlive individual setup() calls).
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, beforeEach, afterEach } from "bun:test"
 import os from "node:os"
-import plugin from "../src/dispatch-policy.ts"
+import plugin, { _testStat } from "../src/dispatch-policy.ts"
 import { DEFAULTS, deepFreeze } from "../src/defaults.ts"
 import { resolveOptions } from "../src/config.ts"
 import * as pkg from "../plugin-package/index.ts"
@@ -145,12 +145,12 @@ describe("config — resolveOptions resolution semantics", () => {
     expect(resolved.dispatch.forbiddenAgents).toEqual(DEFAULTS.dispatch.forbiddenAgents)
   })
 
-  test("unwired groups (structure/paths/messages/primer) warn + ignore, named with their phase", () => {
+  test("messages/primer stay unwired (Phase 3); structure/paths are wired since Phase 2 (no phase warning)", () => {
     const { resolved, problems } = resolveOptions({ structure: {}, paths: {}, messages: {}, primer: {} })
-    expect(problems).toContain(`options group "structure" is not configurable until Phase 2 — ignored (warning)`)
-    expect(problems).toContain(`options group "paths" is not configurable until Phase 2 — ignored (warning)`)
     expect(problems).toContain(`options group "messages" is not configurable until Phase 3 — ignored (warning)`)
     expect(problems).toContain(`options group "primer" is not configurable until Phase 3 — ignored (warning)`)
+    expect(problems.some((p) => p.includes('"structure"'))).toBeFalse() // wired since Phase 2
+    expect(problems.some((p) => p.includes('"paths"'))).toBeFalse() // wired since Phase 2
     expect(resolved.gates.problems).toEqual([]) // nothing broke
   })
 
@@ -501,5 +501,571 @@ describe("config — dual-mode package layout", () => {
     expect(pkg.default).toBe(plugin) // same module instance, not a copy
     expect(typeof (pkg as any)._testStat?.fn).toBe("function")
     expect(typeof (pkg as any)._djb2?.fn).toBe("function")
+  })
+})
+
+// ============================================================================
+// Flexibility Phase 2 — the remaining enforcement-surface options (+10; 26 total):
+// gates.mcpRequirements / gates.readTargets / gates.memoryMandatePattern /
+// structure.blocks / structure.subagentProfile / structure.stitchProfile /
+// structure.stitchPromptTools / structure.stitchMinPrompt / paths.memoryIndex /
+// paths.memoryTree. Same hybrid failure semantics as Phase 1: an invalid option
+// fails THAT guard closed with a CONFIG-ERROR naming the option path (per-guard
+// granularity: memory-mandate and stitch pools are separate sub-guards); unknown
+// keys warn+ignore; defaults do not change.
+// ============================================================================
+
+// Custom (non-Latin) block vocabulary: Cyrillic block names + RU-only patterns.
+const RU_BLOCKS = {
+  role: { name: "Роль", pattern: "(роль\\s*:|ты\\s+—|выступаешь|acting as)" },
+  task: { name: "Задача", pattern: "(задач|цель|миссия)" },
+  context: { name: "Контекст", pattern: "(контекст|предыстория|фон\\b)" },
+  constraints: { name: "Ограничения", pattern: "(ограничен|требован|правил|запрещ|нельзя)" },
+  output: { name: "Формат вывода", pattern: "(формат|результат|отч[её]т|итог)" },
+}
+
+// A fully RU structured brief: satisfies the RU block vocabulary + the default
+// memory-mandate pattern («глобальную память» + MEMORY.md).
+const RU_BRIEF =
+  "Роль: ты — старший Go-инженер. Задача: починить гонку в цикле ingest. " +
+  "Контекст: пул воркеров теряет события под нагрузкой; репро в tests/race_test.go. " +
+  "Ограничения: никаких новых зависимостей; публичный API стабилен; все тесты зелёные. " +
+  "Формат вывода: резюме причины, дифф и результаты тестов. " +
+  "Перед стартом обязательно прочитай глобальную память ~/.config/opencode/MEMORY.md и memory/topics/*."
+
+// Same brief WITHOUT the output sentence and with a mandate sentence that carries no
+// output-block keyword: exactly the «Формат вывода» block is missing.
+const RU_BRIEF_NO_OUTPUT =
+  "Роль: ты — старший Go-инженер. Задача: починить гонку в цикле ingest. " +
+  "Контекст: пул воркеров теряет события под нагрузкой; репро в tests/race_test.go. " +
+  "Ограничения: никаких новых зависимостей; публичный API стабилен; все тесты зелёные. " +
+  "Перед стартом обязательно прочитай глобальную память ~/.config/opencode/MEMORY.md и memory/topics/*."
+
+// English-structured brief whose memory mandate is RU-ONLY: matches the DEFAULT
+// mandate pattern («глобальную память») but NOT an ASCII-only override pattern.
+const RU_MANDATE_PROMPT =
+  "Role: you are a senior Go engineer. Task: fix the race in the ingest loop. " +
+  "Context: the worker pool drops events under load; repro in tests/race_test.go. " +
+  "Constraints: no new dependencies; the public API must stay stable; all tests must pass. " +
+  "Output format: root-cause summary, the diff, and test results. " +
+  "Перед стартом обязательно прочитай глобальную память и перечисли прочитанное."
+
+// Long (>120 chars) prompt that matches NO default block: the stitch check denies it.
+const BAD_STITCH_PROMPT =
+  "Make a pretty landing page with a hero section, some cards, and a footer. " +
+  "Keep it minimal and modern, dark theme, rounded corners, subtle animations everywhere."
+
+describe("config Phase 2 — resolveOptions: gates/structure/paths resolution semantics", () => {
+  test("no raw → new Phase-2 fields resolve to pure DEFAULTS values, zero problems", () => {
+    const { resolved, problems } = resolveOptions(undefined)
+    expect(problems).toEqual([])
+    expect(resolved.gates.mcpRequirements).toEqual(DEFAULTS.gates.mcpRequirements)
+    expect(resolved.gates.readTargets).toEqual(DEFAULTS.gates.readTargets)
+    expect(resolved.gates.memoryMandatePattern).toBe(DEFAULTS.gates.memoryMandatePattern)
+    expect(resolved.gates.problems).toEqual([])
+    expect(resolved.gates.memoryMandateProblems).toEqual([])
+    expect(resolved.structure.blocks).toEqual(DEFAULTS.structure.blocks)
+    expect(resolved.structure.subagentProfile).toEqual(DEFAULTS.structure.subagentProfile)
+    expect(resolved.structure.stitchProfile).toEqual(DEFAULTS.structure.stitchProfile)
+    expect(resolved.structure.stitchPromptTools).toEqual(DEFAULTS.structure.stitchPromptTools)
+    expect(resolved.structure.stitchMinPrompt).toBe(120)
+    expect(resolved.structure.problems).toEqual([])
+    expect(resolved.structure.stitchProblems).toEqual([])
+    expect(resolved.paths.memoryIndex).toBe(DEFAULTS.paths.memoryIndex)
+    expect(resolved.paths.memoryTree).toBe(DEFAULTS.paths.memoryTree)
+    expect(resolved.paths.problems).toEqual([])
+  })
+
+  test("structure.blocks override REPLACES the record (swap-the-whole-set semantics)", () => {
+    const { resolved, problems } = resolveOptions({ structure: { blocks: RU_BLOCKS } })
+    expect(problems).toEqual([])
+    expect(resolved.structure.blocks).toEqual(RU_BLOCKS)
+    expect(resolved.structure.blocks.role?.name).toBe("Роль") // custom vocabulary kept
+    expect(resolved.structure.subagentProfile).toEqual(DEFAULTS.structure.subagentProfile) // untouched knob
+    expect(resolved.structure.problems).toEqual([])
+  })
+
+  test("gates.mcpRequirements / gates.readTargets overrides replace the tables", () => {
+    const mcp = [{ prefix: "acme_", skill: "acme-skill" }]
+    const targets = [
+      { key: "memory", suffix: ".config/acme/MEMORY.md" },
+      { key: "team", suffix: ".config/acme/team.md" },
+    ]
+    const { resolved, problems } = resolveOptions({ gates: { mcpRequirements: mcp, readTargets: targets } })
+    expect(problems).toEqual([])
+    expect(resolved.gates.mcpRequirements).toEqual(mcp)
+    expect(resolved.gates.readTargets).toEqual(targets)
+    expect(resolved.gates.problems).toEqual([])
+    expect(DEFAULTS.gates.mcpRequirements).toEqual([
+      { prefix: "context7", skill: "context7-mcp" },
+      { prefix: "adb_mcp", skill: "adb-mcp" },
+    ]) // defaults untouched
+  })
+
+  test("invalid regex source in blocks → problem names structure.blocks.<key>.pattern; blocks fall back to defaults", () => {
+    const { resolved } = resolveOptions({
+      structure: { blocks: { ...RU_BLOCKS, role: { name: "Role", pattern: "((" } } },
+    })
+    expect(
+      resolved.structure.problems.some((p) =>
+        p.startsWith("structure.blocks.role.pattern must be a valid regex source"),
+      ),
+    ).toBeTrue()
+    expect(resolved.structure.problems.some((p) => p.includes("structure guard failing closed"))).toBeTrue()
+    expect(resolved.structure.blocks).toEqual(DEFAULTS.structure.blocks) // whole-option fallback
+    expect(resolved.structure.problems.length).toBeGreaterThan(0) // the guard is marked broken
+  })
+
+  test("invalid blocks entry shape (missing name) → problem names structure.blocks.<key>", () => {
+    const { resolved } = resolveOptions({
+      structure: { blocks: { task: { pattern: "(задач)" } } }, // no name
+    })
+    expect(
+      resolved.structure.problems.some((p) =>
+        p.startsWith("structure.blocks.task must be an object with non-empty string"),
+      ),
+    ).toBeTrue()
+    expect(resolved.structure.blocks).toEqual(DEFAULTS.structure.blocks)
+  })
+
+  test("profile referencing an unknown block → problem names structure.subagentProfile; structure guard broken", () => {
+    const { resolved } = resolveOptions({ structure: { subagentProfile: ["role", "tasks"] } })
+    expect(
+      resolved.structure.problems.some((p) =>
+        p.includes('structure.subagentProfile references unknown block key "tasks"'),
+      ),
+    ).toBeTrue()
+    expect(resolved.structure.problems.some((p) => p.includes("structure guard failing closed"))).toBeTrue()
+    expect(resolved.structure.subagentProfile).toEqual(DEFAULTS.structure.subagentProfile) // fallback
+  })
+
+  test("stitchProfile referencing an unknown block → problem names structure.stitchProfile", () => {
+    const { resolved } = resolveOptions({ structure: { stitchProfile: ["task", "outputz"] } })
+    expect(
+      resolved.structure.problems.some((p) =>
+        p.includes('structure.stitchProfile references unknown block key "outputz"'),
+      ),
+    ).toBeTrue()
+    expect(resolved.structure.stitchProfile).toEqual(DEFAULTS.structure.stitchProfile)
+  })
+
+  test("mcpRequirements invalid shape → gates.problems name the path; readTargets invalid shape → same pool", () => {
+    const a = resolveOptions({ gates: { mcpRequirements: [{ prefix: "acme_" }] } }) // missing skill
+    expect(
+      a.resolved.gates.problems.some((p) =>
+        p.startsWith("gates.mcpRequirements must be an array of {prefix, skill}"),
+      ),
+    ).toBeTrue()
+    expect(a.resolved.gates.mcpRequirements).toEqual(DEFAULTS.gates.mcpRequirements)
+    const b = resolveOptions({ gates: { readTargets: "MEMORY.md" } })
+    expect(
+      b.resolved.gates.problems.some((p) => p.startsWith("gates.readTargets must be an array of {key, suffix}")),
+    ).toBeTrue()
+    expect(b.resolved.gates.readTargets).toEqual(DEFAULTS.gates.readTargets)
+  })
+
+  test("memoryMandatePattern invalid regex → memoryMandateProblems only (the base gate stays healthy)", () => {
+    const { resolved } = resolveOptions({ gates: { memoryMandatePattern: "(" } })
+    expect(
+      resolved.gates.memoryMandateProblems.some((p) =>
+        p.startsWith("gates.memoryMandatePattern must be a valid regex source"),
+      ),
+    ).toBeTrue()
+    expect(resolved.gates.problems).toEqual([]) // separate sub-guard pool
+    expect(resolved.gates.memoryMandatePattern).toBe(DEFAULTS.gates.memoryMandatePattern)
+  })
+
+  test("stitch knobs: stitchMinPrompt must be a positive integer; stitchPromptTools must be a string[]", () => {
+    const a = resolveOptions({ structure: { stitchMinPrompt: 0 } })
+    expect(
+      a.resolved.structure.stitchProblems.some((p) =>
+        p.startsWith("structure.stitchMinPrompt must be a positive integer"),
+      ),
+    ).toBeTrue()
+    expect(a.resolved.structure.stitchMinPrompt).toBe(120)
+    expect(a.resolved.structure.problems).toEqual([]) // fresh-dispatch structure guard unaffected
+    const b = resolveOptions({ structure: { stitchPromptTools: [42] } })
+    expect(
+      b.resolved.structure.stitchProblems.some((p) =>
+        p.startsWith("structure.stitchPromptTools must be an array of non-empty strings"),
+      ),
+    ).toBeTrue()
+  })
+
+  test("paths: non-empty strings; invalid → paths.problems + default fallback; unknown keys warn+ignore", () => {
+    const a = resolveOptions({ paths: { memoryTree: "" } })
+    expect(
+      a.resolved.paths.problems.some((p) => p.startsWith("paths.memoryTree must be a non-empty string")),
+    ).toBeTrue()
+    expect(a.resolved.paths.memoryTree).toBe(DEFAULTS.paths.memoryTree)
+    const b = resolveOptions({ structure: { blockz: 1 }, paths: { treez: 1 } })
+    expect(b.problems).toContain(`unknown option key "structure.blockz" ignored (warning)`)
+    expect(b.problems).toContain(`unknown option key "paths.treez" ignored (warning)`)
+    expect(b.resolved.structure.problems).toEqual([])
+    expect(b.resolved.paths.problems).toEqual([])
+  })
+
+  test("empty profiles are valid and inert (no problems); empty readTargets is valid + warned", () => {
+    const a = resolveOptions({ structure: { subagentProfile: [], stitchProfile: [] } })
+    expect(a.problems).toEqual([])
+    expect(a.resolved.structure.problems).toEqual([])
+    const b = resolveOptions({ gates: { readTargets: [] } })
+    expect(b.problems).toContain("gates.readTargets is empty — the read prerequisite is inert (warning)")
+    expect(b.resolved.gates.problems).toEqual([]) // warning does NOT break the guard
+  })
+
+  test("resolved config is deep-frozen including the new groups", () => {
+    const { resolved } = resolveOptions({})
+    expect(Object.isFrozen(resolved.structure)).toBeTrue()
+    expect(Object.isFrozen(resolved.paths)).toBeTrue()
+    expect(Object.isFrozen(resolved.gates.readTargets)).toBeTrue()
+    expect(Object.isFrozen(resolved.structure.blocks)).toBeTrue()
+  })
+
+  test("non-object raw → structure/paths/memory-mandate guards also fail closed", () => {
+    const { resolved } = resolveOptions("probe-not-an-object")
+    expect(resolved.gates.memoryMandateProblems.length).toBeGreaterThan(0)
+    expect(resolved.structure.problems.length).toBeGreaterThan(0)
+    expect(resolved.structure.stitchProblems.length).toBeGreaterThan(0)
+    expect(resolved.paths.problems.length).toBeGreaterThan(0)
+  })
+})
+
+describe("config Phase 2 — per-option override behavior", () => {
+  test("custom non-Latin blocks drive the structure gate: a RU structured brief passes end-to-end", async () => {
+    await setupWith({ structure: { blocks: RU_BLOCKS } }) // swap the WHOLE block set
+    const sid = "sess-p2-ruswap"
+    complyAll(sid)
+    const m = await freshDispatch(sid, "backend-architect", RU_BRIEF)
+    expect(m).toBeNull() // structure + memory mandate + breaker all pass on the RU brief
+  })
+
+  test("RU swap: a RU brief missing the «Формат вывода» block denies naming the Cyrillic block", async () => {
+    await setupWith({ structure: { blocks: RU_BLOCKS } })
+    const sid = "sess-p2-ruswap-miss"
+    complyAll(sid)
+    const m = await freshDispatch(sid, "backend-architect", RU_BRIEF_NO_OUTPUT)
+    expect(m).not.toBeNull()
+    expect(m!).toContain("prompt-structure check")
+    expect(m!).toContain("Формат вывода") // block NAME from the custom vocabulary
+    expect(m!).not.toContain("Output format") // default name gone with the swapped set
+  })
+
+  test("empty subagentProfile [] → fresh dispatches un-checked (later checks still run)", async () => {
+    await setupWith({ structure: { subagentProfile: [] } })
+    const sid = "sess-p2-noprofile"
+    complyAll(sid)
+    // a structure-less prompt passes the (inert) structure check…
+    const mandateOnly = "Please read ~/.config/opencode/MEMORY.md and memory/topics/* first."
+    expect(await freshDispatch(sid, "code-reviewer", mandateOnly)).toBeNull()
+    // …but the memory-mandate check still applies to the next fresh dispatch
+    const m2 = await freshDispatch(sid, "code-reviewer", "Just do the thing.")
+    expect(m2).not.toBeNull()
+    expect(m2!).toContain("does not mandate reading global memory")
+  })
+
+  test("gates.readTargets override: custom suffixes record gate reads; the default MEMORY.md no longer satisfies", async () => {
+    await setupWith({
+      gates: {
+        readTargets: [
+          { key: "memory", suffix: ".config/acme/MEMORY.md" },
+          { key: "team", suffix: ".config/acme/team.md" },
+        ],
+      },
+    })
+    const sid = "sess-p2-readtargets"
+    // zero-state: the deny names the CUSTOM suffix, not the default one
+    const m0 = await denyMsg({ tool: "shell", sessionID: sid, input: {} })
+    expect(m0).not.toBeNull()
+    expect(m0!).toContain("read of ~/.config/acme/MEMORY.md")
+    expect(m0!).not.toContain(".config/opencode/MEMORY.md")
+    // the DEFAULT read does NOT satisfy the custom target
+    loadRead(sid, `${HOME}/.config/opencode/MEMORY.md`)
+    for (const s of ["brainstorming", "grilling", "build-with-exa", "context7-mcp"]) loadSkill(sid, s)
+    const m1 = await denyMsg({ tool: "shell", sessionID: sid, input: {} })
+    expect(m1).not.toBeNull()
+    expect(m1!).toContain("read of ~/.config/acme/MEMORY.md")
+    // the custom read does — recorded via the ~ form (both forms must keep working)
+    loadRead(sid, "~/.config/acme/MEMORY.md")
+    expect(await denyMsg({ tool: "shell", sessionID: sid, input: {} })).toBeNull()
+    // dispatch preflight demands the non-memory custom target; reading it unlocks
+    for (const s of ["subagent-driven-development", "dispatching-parallel-agents", "prompt-engineering-patterns"]) loadSkill(sid, s)
+    const m2 = await freshDispatch(sid, "code-reviewer", GOOD_PROMPT)
+    expect(m2).not.toBeNull()
+    expect(m2!).toContain("read of ~/.config/acme/team.md")
+    loadRead(sid, `${HOME}/.config/acme/team.md`)
+    expect(await freshDispatch(sid, "code-reviewer", GOOD_PROMPT)).toBeNull()
+  })
+
+  test("gates.readTargets [] → the read prerequisite is inert (skills alone satisfy the base gate)", async () => {
+    await setupWith({ gates: { readTargets: [] } })
+    const sid = "sess-p2-noreads"
+    for (const s of ["brainstorming", "grilling", "build-with-exa", "context7-mcp"]) loadSkill(sid, s)
+    expect(await denyMsg({ tool: "shell", sessionID: sid, input: {} })).toBeNull() // no read demanded
+  })
+
+  test("gates.mcpRequirements [] → the MCP→skill gate is inert (valid per the §C empty-list ruling)", async () => {
+    await setupWith({ gates: { mcpRequirements: [] } })
+    const sid = "sess-p2-nomcp"
+    complyAll(sid) // base-complete session (default tables gone: adb_mcp_* is ungated anyway)
+    expect(await denyMsg({ tool: "adb_mcp_tap", sessionID: sid, input: {} })).toBeNull()
+    expect(await denyMsg({ tool: "context7_query_docs", sessionID: sid, input: {} })).toBeNull()
+  })
+
+  test("gates.mcpRequirements override: custom prefix → custom skill (deny/allow pair); default prefixes gone", async () => {
+    await setupWith({ gates: { mcpRequirements: [{ prefix: "acme_", skill: "acme-skill" }] } })
+    const sid = "sess-p2-mcp"
+    // the custom prefix extends the gated set: zero-state → BASE gate deny
+    const m0 = await denyMsg({ tool: "acme_drive", sessionID: sid, input: {} })
+    expect(m0).not.toBeNull()
+    expect(m0!).toContain('skill "brainstorming"')
+    // the default prefixes left the table: adb_mcp_* is ungated now
+    expect(await denyMsg({ tool: "adb_mcp_tap", sessionID: `${sid}-adb`, input: {} })).toBeNull()
+    // base-complete session → the MCP-specific deny names the CUSTOM skill (generic hint)
+    complyAll(sid)
+    const m1 = await denyMsg({ tool: "acme_drive", sessionID: sid, input: {} })
+    expect(m1).not.toBeNull()
+    expect(m1!).toContain('MCP tool "acme_drive"')
+    expect(m1!).toContain('with id "acme-skill"')
+    expect(m1!).toContain("load it before driving this server") // unknown skill → generic hint
+    // loading the custom skill unlocks the server
+    loadSkill(sid, "acme-skill")
+    expect(await denyMsg({ tool: "acme_drive", sessionID: sid, input: {} })).toBeNull()
+  })
+
+  test("gates.memoryMandatePattern override: an ASCII-only pattern no longer accepts the RU-only mandate", async () => {
+    await setupWith({ gates: { memoryMandatePattern: "(MEMORY\\.md|memory/(topics|projects)|global memory)" } })
+    const sid1 = "sess-p2-mandate-ascii"
+    complyAll(sid1)
+    expect(await freshDispatch(sid1, "code-reviewer", GOOD_PROMPT)).toBeNull() // MEMORY.md mandate passes
+    const sid2 = "sess-p2-mandate-ru"
+    complyAll(sid2)
+    const m = await freshDispatch(sid2, "code-reviewer", RU_MANDATE_PROMPT)
+    expect(m).not.toBeNull()
+    expect(m!).toContain("does not mandate reading global memory") // RU-only mandate now denies
+  })
+
+  test("structure.stitchPromptTools: [] disables the stitch surface; a custom name re-aims it", async () => {
+    await setupWith({ structure: { stitchPromptTools: [] } })
+    const mOff = await denyMsg({
+      tool: "stitch_generate_screen_from_text",
+      sessionID: "sess-p2-stitch-off",
+      input: { prompt: BAD_STITCH_PROMPT },
+    })
+    expect(mOff).toBeNull() // surface disabled
+    await setupWith({ structure: { stitchPromptTools: ["mcp_paint"] } })
+    const mAim = await denyMsg({
+      tool: "mcp_paint",
+      sessionID: "sess-p2-stitch-aim",
+      input: { prompt: BAD_STITCH_PROMPT },
+    })
+    expect(mAim).not.toBeNull()
+    expect(mAim!).toContain('MCP tool "mcp_paint"')
+  })
+
+  test("structure.stitchMinPrompt: a small floor checks short prompts; a huge floor disables the surface", async () => {
+    await setupWith({ structure: { stitchMinPrompt: 5 } })
+    const mShort = await denyMsg({
+      tool: "stitch_generate_screen_from_text",
+      sessionID: "sess-p2-floor5",
+      input: { prompt: "short" },
+    })
+    expect(mShort).not.toBeNull()
+    expect(mShort!).toContain("prompt-structure check")
+    const mTiny = await denyMsg({
+      tool: "stitch_generate_screen_from_text",
+      sessionID: "sess-p2-floor5-tiny",
+      input: { prompt: "hi" },
+    })
+    expect(mTiny).toBeNull() // below the floor → never checked
+    await setupWith({ structure: { stitchMinPrompt: 100000 } })
+    const mHuge = await denyMsg({
+      tool: "stitch_generate_screen_from_text",
+      sessionID: "sess-p2-floorhuge",
+      input: { prompt: BAD_STITCH_PROMPT },
+    })
+    expect(mHuge).toBeNull() // surface effectively off
+  })
+
+  test("paths override re-aims the memory-overwrite guard (hermetic: _testStat stub decides existence)", async () => {
+    const ACME_INDEX = "/tmp/opencode/mandator-ext6/flex-design/acme/MEMORY.md"
+    const ACME_TREE = "/tmp/opencode/mandator-ext6/flex-design/acme/memory"
+    const ACME_FILE = `${ACME_TREE}/topics/x.md`
+    const defaultStat = _testStat.fn
+    _testStat.fn = () => true // everything "exists"; only classification may deny
+    try {
+      await setupWith({ paths: { memoryIndex: ACME_INDEX, memoryTree: ACME_TREE } })
+      const sid = "sess-p2-paths"
+      complyAll(sid) // write is gated: pass the skill/memory gate to reach the overwrite guard
+      // a write under the CUSTOM tree is guarded…
+      const mAcme = await denyMsg({ tool: "write", sessionID: sid, input: { path: ACME_FILE } })
+      expect(mAcme).not.toBeNull()
+      expect(mAcme!).toContain("whole-file write over an EXISTING global memory file")
+      // …and a write to the REAL home tree is no longer classified as memory (passes)
+      const mReal = await denyMsg({
+        tool: "write",
+        sessionID: sid,
+        input: { path: "~/.config/opencode/MEMORY.md" },
+      })
+      expect(mReal).toBeNull()
+    } finally {
+      _testStat.fn = defaultStat
+    }
+  })
+
+  test("unknown keys inside the newly wired groups warn+ignore; defaults keep enforcing", async () => {
+    await setupWith({ structure: { blockz: 1 }, paths: { treez: 1 } })
+    const sid = "sess-p2-unknownkeys"
+    complyAll(sid)
+    expect(await freshDispatch(sid, "code-reviewer", GOOD_PROMPT)).toBeNull() // enforcement intact
+    const sys: any[] = []
+    await hooks["session.context"]({ system: sys, messages: [] })
+    expect(sys[1]!.text).toContain(`unknown option key "structure.blockz" ignored (warning)`)
+    expect(sys[1]!.text).toContain(`unknown option key "paths.treez" ignored (warning)`)
+  })
+})
+
+describe("config Phase 2 — invalid options fail closed per guard (CONFIG-ERROR denies)", () => {
+  test("structure.blocks invalid regex → fresh dispatch + stitch deny with CONFIG-ERROR; zero-state keeps the normal gate deny (precedence)", async () => {
+    await setupWith({ structure: { blocks: { ...RU_BLOCKS, role: { name: "Role", pattern: "((" } } } })
+    // compliance-teaching denies keep precedence: a zero-state dispatch still gets the GATE deny
+    const mGate = await denyMsg({
+      tool: "subagent",
+      sessionID: "sess-p2-badblocks0",
+      input: { agent: "code-reviewer", background: true, prompt: GOOD_PROMPT },
+    })
+    expect(mGate).not.toBeNull()
+    expect(mGate!).not.toContain("config-error")
+    expect(mGate!).toContain('skill "brainstorming"')
+    // a compliant session's fresh dispatch hits the structure CONFIG-ERROR at its position
+    const sid = "sess-p2-badblocks"
+    complyAll(sid)
+    const m = await freshDispatch(sid, "code-reviewer", GOOD_PROMPT)
+    expect(m).not.toBeNull()
+    expect(m!).toContain("[config-error]")
+    expect(m!).toContain("structure.blocks.role.pattern")
+    // the stitch surface (a different sub-guard trigger, same broken pool) denies too
+    const mStitch = await denyMsg({
+      tool: "stitch_generate_screen_from_text",
+      sessionID: `${sid}-stitch`,
+      input: { prompt: BAD_STITCH_PROMPT },
+    })
+    expect(mStitch).not.toBeNull()
+    expect(mStitch!).toContain("[config-error]")
+    expect(mStitch!).toContain("structure.blocks.role.pattern")
+  })
+
+  test("structure.subagentProfile referencing an unknown block → fresh dispatch CONFIG-ERROR names the path", async () => {
+    await setupWith({ structure: { subagentProfile: ["role", "tasks"] } })
+    const sid = "sess-p2-badprofile"
+    complyAll(sid)
+    const m = await freshDispatch(sid, "code-reviewer", GOOD_PROMPT)
+    expect(m).not.toBeNull()
+    expect(m!).toContain("[config-error]")
+    expect(m!).toContain("structure.subagentProfile")
+    expect(m!).toContain('unknown block key "tasks"')
+  })
+
+  test("gates.readTargets broken → gated calls deny with CONFIG-ERROR naming the path", async () => {
+    await setupWith({ gates: { readTargets: "MEMORY.md" } })
+    const m = await denyMsg({ tool: "shell", sessionID: "sess-p2-badtargets", input: {} })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("[config-error]")
+    expect(m!).toContain("gates.readTargets")
+    expect(m!).toContain(`got "MEMORY.md"`)
+  })
+
+  test("gates.mcpRequirements broken → gated calls deny with CONFIG-ERROR naming the path", async () => {
+    await setupWith({ gates: { mcpRequirements: [{ prefix: "acme_" }] } }) // missing skill field
+    const sid = "sess-p2-badmcp"
+    complyAll(sid) // even a base-complete session cannot pass: prerequisites are unreadable
+    const m = await denyMsg({ tool: "shell", sessionID: sid, input: {} })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("[config-error]")
+    expect(m!).toContain("gates.mcpRequirements")
+  })
+
+  test("gates.memoryMandatePattern broken regex → fresh dispatch CONFIG-ERROR at the mandate position only", async () => {
+    await setupWith({ gates: { memoryMandatePattern: "(" } })
+    // the base gate is a different guard: a zero-state shell call gets the NORMAL gate deny
+    const mGate = await denyMsg({ tool: "shell", sessionID: "sess-p2-badmandate0", input: {} })
+    expect(mGate).not.toBeNull()
+    expect(mGate!).not.toContain("config-error")
+    expect(mGate!).toContain('skill "brainstorming"')
+    // a compliant shell call passes — the gate is healthy
+    const sid = "sess-p2-badmandate"
+    complyAll(sid)
+    expect(await denyMsg({ tool: "shell", sessionID: sid, input: {} })).toBeNull()
+    // a compliant dispatch with a malformed brief gets the STRUCTURE deny first (precedence)
+    const mStruct = await freshDispatch(sid, "code-reviewer", "no structure here at all")
+    expect(mStruct).not.toBeNull()
+    expect(mStruct!).toContain("prompt-structure check")
+    expect(mStruct!).not.toContain("config-error")
+    // a well-structured brief reaches the broken mandate check → CONFIG-ERROR
+    const m = await freshDispatch(sid, "code-reviewer", GOOD_PROMPT)
+    expect(m).not.toBeNull()
+    expect(m!).toContain("[config-error]")
+    expect(m!).toContain("gates.memoryMandatePattern")
+  })
+
+  test("stitch knobs broken → the stitch call CONFIG-ERRORs; fresh dispatches are unaffected", async () => {
+    await setupWith({ structure: { stitchMinPrompt: 0 } })
+    const mStitch = await denyMsg({
+      tool: "stitch_generate_screen_from_text",
+      sessionID: "sess-p2-badfloor",
+      input: { prompt: BAD_STITCH_PROMPT },
+    })
+    expect(mStitch).not.toBeNull()
+    expect(mStitch!).toContain("[config-error]")
+    expect(mStitch!).toContain("structure.stitchMinPrompt")
+    // fresh dispatches: a different sub-guard — normal flow with a compliant session
+    const sid = "sess-p2-badfloor-fresh"
+    complyAll(sid)
+    expect(await freshDispatch(sid, "code-reviewer", GOOD_PROMPT)).toBeNull()
+  })
+
+  test("structure group not a plain object → structure guard fails closed (fresh + stitch)", async () => {
+    await setupWith({ structure: 42 })
+    const sid = "sess-p2-badgroup"
+    complyAll(sid)
+    const m = await freshDispatch(sid, "code-reviewer", GOOD_PROMPT)
+    expect(m).not.toBeNull()
+    expect(m!).toContain("[config-error]")
+    expect(m!).toContain(`options group "structure" must be a plain object`)
+    const mStitch = await denyMsg({
+      tool: "stitch_generate_screen_from_text",
+      sessionID: `${sid}-stitch`,
+      input: { prompt: BAD_STITCH_PROMPT },
+    })
+    expect(mStitch).not.toBeNull()
+    expect(mStitch!).toContain("[config-error]")
+  })
+
+  test("paths broken → writes covered by the DEFAULT memory topology CONFIG-ERROR; other writes pass", async () => {
+    const defaultStat = _testStat.fn
+    _testStat.fn = () => true
+    try {
+      await setupWith({ paths: { memoryTree: "" } })
+      const sid = "sess-p2-badpaths"
+      complyAll(sid) // pass the gate to reach the write guard
+      // default-covered write → CONFIG-ERROR naming the broken path (broken-group scoping)
+      const mCovered = await denyMsg({
+        tool: "write",
+        sessionID: sid,
+        input: { path: "~/.config/opencode/MEMORY.md" },
+      })
+      expect(mCovered).not.toBeNull()
+      expect(mCovered!).toContain("[config-error]")
+      expect(mCovered!).toContain("paths.memoryTree")
+      // a write the default config would never have inspected passes
+      const mOutside = await denyMsg({
+        tool: "write",
+        sessionID: sid,
+        input: { path: "/tmp/opencode/mandator-ext6/flex-design/unrelated.txt" },
+      })
+      expect(mOutside).toBeNull()
+    } finally {
+      _testStat.fn = defaultStat
+    }
   })
 })

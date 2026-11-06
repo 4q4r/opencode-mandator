@@ -21,7 +21,9 @@ the mandatory set + the MCP→skill gate) shipped 2026-11-07 and left one follow
 The ext-7.1 MCP→skill gate maps only `context7` and `adb_mcp`. The five other MCP servers
 (zai-mcp-server, cloakbrowser, stitch, ssh-any, circumvention-corpus) have no related skill
 in the system, so the gate cannot cover them — authoring those skills is a separate future
-task (owner informed 2026-11-07; decision pending).
+task (owner informed 2026-11-07; decision pending). mcpRequirements is config-ready for
+new skills — one table row each: once a skill exists, pointing a prefix at it is a
+`gates.mcpRequirements` entry in `opencode.json` (Flexibility Phase 2), no code change.
 
 ## ext-6.2 — Structured deny/dispatch audit log (P1, backlogged by owner 2026-10-25)
 
