@@ -2,6 +2,14 @@ import { Plugin } from "@opencode/plugin"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import {
+  DEFAULTS,
+  buildBlocks,
+  buildChainOverrideRe,
+  buildMemoryMandateRe,
+  fill,
+  type BlockKey,
+} from "./defaults.ts"
 
 // OpenCode V2 enforcement plugin — wave3-a2 + gate extensions 1-5 (owner decisions).
 // Deterministic enforcement of owner dispatch policy; the model cannot forget these.
@@ -72,7 +80,7 @@ import path from "node:path"
 //      recovery, the marker instruction, and the shared COMPLIANCE_WARNING trailer
 //      (here the re-run advice IS valid — re-run with the marker).
 //  14. MCP→skill gate (ext 7.1): an MCP tool whose server has a related skill is DENIED
-//      until that skill is loaded in the session. MCP_SKILL_REQUIREMENTS matches by
+//      until that skill is loaded in the session. DEFAULTS.gates.mcpRequirements matches by
 //      PREFIX on the flat MCP tool name (V2 convention "<server>_<tool>", unsupported
 //      chars → "_": server "adb-mcp" → prefix "adb_mcp_"; the context7 tools are
 //      "context7_resolve_library_id" / "context7_query_docs"). The prefixes also extend
@@ -110,93 +118,35 @@ import path from "node:path"
 //     the structure check silently never fires (same documented degradation as the
 //     tool-description hint for renamed tools).
 
-// PRIMER v2 — owner-approved 2026-11-06 (13 bullets; brief-quality rules, cloakbrowser owner-lock; designed by the prompt-engineering round, sources in /tmp/opencode/mandator-ext6/primer-v2/primer-v2-report.md).
-// ext-7.1 sync (2026-11-07): context7-mcp joins the skill mandate (bullet 2) and the [skill gate] bullet — mirror bullets follow live deny behavior (PR #7 rule); 13 bullets kept, word delta ≤25.
-const PRIMER = `[auto-injected operating rules — non-negotiable]
-- Before task decisions consult global memory: ~/.config/opencode/MEMORY.md + memory/topics/* + memory/projects/* (list what you read). Keep memory live: supersede, never duplicate; subagents never write memory files — send facts to the controller.
-- Skills are MANDATORY and fire BEFORE the work: brainstorming before any feature/creative work (produce a bounded spec first, not code); grilling before new features (interview until the spec has no holes; a found hole is a STOP-blocker — resolve with the owner, never guess); build-with-exa for every external fact (Exa primary source); context7-mcp before touching the context7 MCP (resolve-library-id before query-docs); plus ≥2 more skills you pick as relevant to THIS task. In every report list every skill invoked with one line on what it changed — a report without the skill list is incomplete.
-- Subagent dispatches: background:true ALWAYS; specialized agent types only — \`general\` is FORBIDDEN; new task = fresh session (never pass sessionID); controller verifies results (git status / real output) — never trust reports blindly.
-- Every dispatch brief has five labeled blocks — Role / Task / Context / Constraints / Output format — written for a cold reader with zero session context: objective, exact output shape, tool/source guidance, task boundaries. The brief must also carry the memory mandate (read ~/.config/opencode/MEMORY.md + memory/topics/* + memory/projects/*, list what was read), the skill mandate, and the report contract. The plugin denies briefs missing a block — write it right the first time.
-- The orchestrator NEVER implements: no edits, builds, gates, or pushes by your own hand — no exceptions, not even mechanical fixes or scripted renames; ALL implementation goes to dispatched subagents. Parallel implementation only with disjoint file scopes or separate worktrees (never two agents on the same output paths).
-- Every change: branch → PR → squash-merge; never push main directly; no stash without explicit yes; no deploy/publish without explicit owner word.
-- Quality gates run as standalone blocking commands; a failed gate must make merge/push unreachable; never chain gate+release in one \`;\`/\`&&\` command.
-- Scratch in /tmp or ~/.opencode/plan/; engagement memory goes to global memory, never ~/ root clutter; kill processes by exact PID only (no pkill/killall by name).
-- Deliverable format (file type, layout standard, one vs many artifacts) is an explicit early question — never default it.
-- Estimates (time/cost/points) only on explicit request. Chat with owner: Russian. Code/reports: English.
-- External facts via Exa; every screenshot/visual → Z.AI Vision MCP; fail loudly — never fake success paths. cloakbrowser MCP is OWNER-LOCKED: every invocation MUST pass humanize=True and human_preset=careful — no exceptions; all other parameters at your discretion.
-- [skill gate] This session's plugin ENFORCES the skill mandate: edit/write/bash/subagent-dispatch/web/execute calls are DENIED until \`skill\` has been invoked for brainstorming, grilling, build-with-exa, and context7-mcp in this session. If denied: invoke the four skills, then re-run your call unchanged.
-- [skill gate: memory + orchestrator] Every gated call additionally requires a \`read\` of ~/.config/opencode/MEMORY.md in this session; before dispatching ANY subagent, the session must ALSO have loaded skills \`subagent-driven-development\` + \`dispatching-parallel-agents\` + \`prompt-engineering-patterns\` and read ~/.config/opencode/memory/topics/workflow.md + workflow-git-pr.md. Deny messages list exactly what is missing — comply, then re-run your call unchanged.`
+// PRIMER v2 (owner-approved 2026-11-06, 13 bullets; ext-7.1 sync 2026-11-07) lives
+// byte-identical in DEFAULTS.primer.text (defaults.ts).
+const PRIMER = DEFAULTS.primer.text
 
-const DISPATCH_TOOLS = new Set(["subagent"])
-const FORBIDDEN_AGENT = "general"
+const DISPATCH_TOOLS = new Set(DEFAULTS.dispatch.tools)
+const FORBIDDEN_AGENT = DEFAULTS.dispatch.forbiddenAgents[0]
 
 // --- Skill gate (wave3-a2 gate extensions 1-3; owner decisions Q1-Q4 + ext3) ---
 // Any GATED tool call is DENIED until the session meets the prerequisites. Global
-// (all projects/sessions/roles); only escape is OPENCODE_ENFORCE_OFF=1. Gated names
-// verified against the live v2.0.27 session DB:
-//   edit/write (live), shell (live bash-class; 52k calls, last 2026-10-14),
-//   bash/apply_patch (legacy defensive inclusions; bash last 2026-09-16,
-//   apply_patch last 2026-08-28; multiedit/patch never existed on this install),
-//   subagent (dispatch), webfetch/websearch (built-in web), execute (Code Mode —
-//   can compose tools.exa.* internally: bypass surface, owner decision; 4477 live
-//   calls, last 2026-10-14), plus substring "exa"
-//   for MCP exa tools (live: exa_web_search_exa, exa_web_fetch_exa).
-const GATED_TOOLS = new Set([
-  "edit",
-  "write",
-  "shell",
-  "bash",
-  "apply_patch",
-  "subagent",
-  "webfetch",
-  "websearch",
-  "execute",
-])
+// (all projects/sessions/roles); only escape is OPENCODE_ENFORCE_OFF=1. The gated tool
+// names (with their live-DB verification notes) live in DEFAULTS.gates.tools.
+const GATED_TOOLS = new Set(DEFAULTS.gates.tools)
 
 // ext 7.1 (owner decision "каждого агента", 2026-11-07): context7-mcp joins the
-// mandatory set — every gated call now requires all four skills + the MEMORY.md read.
-const MANDATORY_SKILLS = ["brainstorming", "grilling", "build-with-exa", "context7-mcp"] as const
-
-// ext 7.1: MCP→skill gate — an MCP tool may not be driven without its related skill.
-// PREFIX match on the flat MCP tool name (V2 convention "<server>_<tool>", unsupported
-// chars → "_": server "adb-mcp" → prefix "adb_mcp_"; the context7 tools are
-// "context7_resolve_library_id" / "context7_query_docs"). The prefixes ALSO extend the
-// gated set (isGatedTool), mirroring the exa-substring treatment: the base gate covers
-// these MCP tools and the MCP-specific deny layers on top of a base-complete session.
-// HONEST NOTE: the "context7" entry cannot fire while context7-mcp is mandatory — the
-// base gate already requires context7-mcp for every gated call — it is kept in the
-// table for message specificity + future-proofing if the mandatory set ever changes;
-// the live enforcement of this gate is the "adb_mcp" entry. Deliberately NO mappings
-// for zai-mcp-server / cloakbrowser / stitch / ssh-any / circumvention-corpus: no
-// related skills exist in the system (owner informed 2026-11-07; authoring them is
-// tracked in docs/BACKLOG.md).
-const MCP_SKILL_REQUIREMENTS: ReadonlyArray<[string, string]> = [
-  ["context7", "context7-mcp"],
-  ["adb_mcp", "adb-mcp"],
-]
+// mandatory set — see DEFAULTS.skills.mandatory.
+const MANDATORY_SKILLS = DEFAULTS.skills.mandatory
 
 // --- Gate extension 3: memory-read verification + orchestrator dispatch preflight ---
 // Base gate prerequisite: root MEMORY.md read in this session (owner-accepted proxy
 // for "memory consulted"). Dispatch gate (subagent only) additionally requires the
 // orchestrator skills and reads of both workflow memory files.
-//
-// prompt-engineering-patterns (ext 4, owner decision 2026-10-24): dispatch briefs
-// (subagent prompts) and agent-MCP prompts are prompts — the orchestrator must apply
-// prompt-engineering patterns when writing them.
-const ORCHESTRATOR_SKILLS = [
-  "subagent-driven-development",
-  "dispatching-parallel-agents",
-  "prompt-engineering-patterns",
-] as const
+const ORCHESTRATOR_SKILLS = DEFAULTS.skills.orchestrator
 
-// Read targets are matched by suffix after ~-expansion; both absolute and ~ forms
-// occur in real read calls (11 stored ~/ calls verified in the session DB).
-const MEMORY_READ_SUFFIX = ".config/opencode/MEMORY.md"
-const READ_TARGETS: ReadonlyArray<[string, string]> = [
-  ["memory", MEMORY_READ_SUFFIX],
-  ["workflow", ".config/opencode/memory/topics/workflow.md"],
-  ["workflow-git-pr", ".config/opencode/memory/topics/workflow-git-pr.md"],
-]
+// Read-target keys/suffixes live in DEFAULTS.gates.readTargets (suffix match after
+// ~-expansion; both absolute and ~ forms occur in real read calls — 11 stored ~/ calls
+// verified in the session DB). Demand strings in gateMissing derive from the suffixes.
+const READ_TARGET_SUFFIX: Record<string, string> = Object.fromEntries(
+  DEFAULTS.gates.readTargets.map((target) => [target.key, target.suffix]),
+)
 
 // --- Gate extension 5: deterministic prompt-structure check (owner decision) ---
 // Source of truth: the prompt-engineering-patterns skill — references/system-prompts.md
@@ -206,60 +156,26 @@ const READ_TARGETS: ReadonlyArray<[string, string]> = [
 // Output). The check is keyword-presence per block, tolerant to header forms
 // ("## Task", "**Task:**", "Task:") and to Russian block names; it is the honest,
 // deterministic subset of "no bad prompts" — it cannot judge content quality, only
-// structure (the COMPLIANCE WARNING covers the rest).
-type BlockKey = "role" | "task" | "context" | "constraints" | "output"
-const BLOCKS: Record<BlockKey, { name: string; re: RegExp }> = {
-  role: { name: "Role", re: /(you are|your role|role\s*:|acting as|роль\s*:)/i },
-  task: { name: "Task", re: /(tasks?\b|objectives?\b|goals?\b|mission\b|задач|цель)/i },
-  context: { name: "Context", re: /(contexts?\b|background\b|контекст)/i },
-  constraints: {
-    name: "Constraints",
-    re: /(constraints?\b|requirements?\b|guidelines?\b|rules?\b|\bmust\b|do not|don't|avoid|never|forbidden|требован|ограничен|правил|запрещ)/i,
-  },
-  output: {
-    name: "Output format",
-    re: /(output format|response format|expected output|deliverable|reports?\b|formats?\b|includes?\b|отч[её]т|формат)/i,
-  },
-}
-// Subagent brief: all five blocks (a full prompt to an LLM agent).
-const SUBAGENT_PROFILE: ReadonlyArray<BlockKey> = ["role", "task", "context", "constraints", "output"]
-// Stitch generation prompts: four blocks — no Role (the tool's role is fixed by the
-// design tool itself; forcing "You are..." into a screen prompt would be artificial).
-const STITCH_PROFILE: ReadonlyArray<BlockKey> = ["task", "context", "constraints", "output"]
-// Free-text `prompt: string` (Required) inputs, verified in the Stitch MCP catalog:
-//   stitch_generate_screen_from_text — "The input text to generate the screen from"
-//   stitch_edit_screens              — "The input text to generate the screen from"
-//   stitch_generate_variants         — "The input text used to generate the variants"
-// Other Stitch surfaces are deliberately exempt (owner decision — "don't block
-// commands where arbitrary text cannot be entered"):
-//   - IDs/enums/flags tools (get_project, list_*, download_file, apply_design_system, …);
-//   - create_project.title (a short label, not a prompt);
-//   - designMd / styleGuidelines on create/update_design_system (design-spec genre —
-//     a token/style document, not a task prompt; the block profile does not fit);
-//   - upload_design_md (base64 file upload).
-const STITCH_PROMPT_TOOLS = new Set([
-  "stitch_generate_screen_from_text",
-  "stitch_edit_screens",
-  "stitch_generate_variants",
-])
-// Short prompts pass the structure check: the Stitch tools themselves recommend
-// re-calling with an accepted suggestion verbatim (e.g. "Yes, make them all") —
-// tactical follow-ups must keep flowing. A structured generation brief is
-// naturally longer than this floor.
-const STITCH_MIN_PROMPT = 120
+// structure (the COMPLIANCE WARNING covers the rest). Block vocabulary, matchers
+// (compiled from DEFAULTS.structure.blocks pattern sources with the original flag "i"),
+// profiles, and their rationale live in DEFAULTS.structure.
+const BLOCKS = buildBlocks(DEFAULTS.structure.blocks)
+const SUBAGENT_PROFILE: ReadonlyArray<BlockKey> = DEFAULTS.structure.subagentProfile
+const STITCH_PROFILE: ReadonlyArray<BlockKey> = DEFAULTS.structure.stitchProfile
+// Stitch free-text prompt tools + the 120-char length floor live in
+// DEFAULTS.structure.stitchPromptTools / stitchMinPrompt.
+const STITCH_PROMPT_TOOLS = new Set(DEFAULTS.structure.stitchPromptTools)
+const STITCH_MIN_PROMPT = DEFAULTS.structure.stitchMinPrompt
 
 function missingBlocks(prompt: string, profile: ReadonlyArray<BlockKey>): string[] {
   return profile.filter((key) => !BLOCKS[key].re.test(prompt)).map((key) => BLOCKS[key].name)
 }
 
 // --- ext 6.1: memory-mandate keyword in fresh dispatch briefs (owner hard dispatch
-// protocol 2026-10-10: every subagent brief must instruct the subagent to read global
-// memory and list what it read). Keyword presence — the same honest subset philosophy
-// as ext 5. Regex per the ext-6 analyst sketch with one deliberate correction: JS `\w`
-// is ASCII-only and cannot carry the Cyrillic tail of «глобальную», so the RU forms
-// would never match; `\p{L}` under the `u` flag is required (pinned by the RU test).
-const MEMORY_MANDATE_RE =
-  /(MEMORY\.md|memory\/(topics|projects)|глобальн\p{L}*\s+пам(ять|яти)|global memory)/iu
+// protocol 2026-10-10) — the pattern source lives in
+// DEFAULTS.gates.memoryMandatePattern, compiled with the original flags "iu" (the
+// `\p{L}`-under-`u` requirement for the RU forms is documented at the builder).
+const MEMORY_MANDATE_RE = buildMemoryMandateRe(DEFAULTS.gates.memoryMandatePattern)
 
 // `~` and `~/`-prefixed paths are expanded against the real home directory; both forms
 // occur in real traffic (11 stored ~/ read calls verified in the session DB). Shared by
@@ -273,8 +189,8 @@ function expandTilde(p: string): string {
 function classifyRead(p: unknown): string | undefined {
   if (typeof p !== "string" || !p) return undefined
   const s = expandTilde(p)
-  for (const [target, suffix] of READ_TARGETS) {
-    if (s === suffix || s.endsWith("/" + suffix)) return target
+  for (const target of DEFAULTS.gates.readTargets) {
+    if (s === target.suffix || s.endsWith("/" + target.suffix)) return target.key
   }
   return undefined
 }
@@ -288,8 +204,8 @@ function classifyRead(p: unknown): string | undefined {
 // resolves to exactly the home-anchored root MEMORY.md, or lands inside the home-anchored
 // memory tree (path.relative semantics: relative === "" or not ".."-prefixed and not
 // absolute). Case-sensitive by design (Linux install).
-const MEMORY_INDEX_PATH = path.resolve(os.homedir(), ".config", "opencode", "MEMORY.md")
-const MEMORY_TREE_PATH = path.resolve(os.homedir(), ".config", "opencode", "memory")
+const MEMORY_INDEX_PATH = expandTilde(DEFAULTS.paths.memoryIndex)
+const MEMORY_TREE_PATH = expandTilde(DEFAULTS.paths.memoryTree)
 
 function isGlobalMemoryPath(p: string): boolean {
   const resolved = path.resolve(p)
@@ -358,11 +274,11 @@ export const _djb2 = { fn: djb2 }
 
 function isGatedTool(tool: string): boolean {
   if (GATED_TOOLS.has(tool)) return true
-  if (tool.includes("exa")) return true // MCP exa tools appear as exa_<...>_exa
+  if (tool.includes(DEFAULTS.gates.exaSubstring)) return true // MCP exa tools appear as exa_<...>_exa
   // ext 7.1: MCP servers with a skill requirement are gated tools — the base gate
   // teaches the full mandatory list at zero state; the MCP-specific gate (below) layers
   // the per-server requirement on top of a base-complete session.
-  if (MCP_SKILL_REQUIREMENTS.some(([prefix]) => tool.startsWith(prefix))) return true
+  if (DEFAULTS.gates.mcpRequirements.some((req) => tool.startsWith(req.prefix))) return true
   return false
 }
 
@@ -381,78 +297,48 @@ function gateMissing(sessionID: string, dispatch: boolean): string[] {
   const loaded = loadedSkills.get(sessionID)
   const reads = readTargets.get(sessionID)
   for (const skill of MANDATORY_SKILLS) if (!loaded?.has(skill)) missing.push(`skill "${skill}"`)
-  if (!reads?.has("memory")) missing.push("read of ~/.config/opencode/MEMORY.md")
+  if (!reads?.has("memory")) missing.push(`read of ~/${READ_TARGET_SUFFIX.memory}`)
   if (dispatch) {
     for (const skill of ORCHESTRATOR_SKILLS) if (!loaded?.has(skill)) missing.push(`skill "${skill}"`)
-    if (!reads?.has("workflow")) missing.push("read of ~/.config/opencode/memory/topics/workflow.md")
-    if (!reads?.has("workflow-git-pr")) missing.push("read of ~/.config/opencode/memory/topics/workflow-git-pr.md")
+    if (!reads?.has("workflow")) missing.push(`read of ~/${READ_TARGET_SUFFIX.workflow}`)
+    if (!reads?.has("workflow-git-pr")) missing.push(`read of ~/${READ_TARGET_SUFFIX["workflow-git-pr"]}`)
   }
   return missing
 }
 
-// Declarative compliance warning (ext 4, owner decision — "пугалка"): appended to
-// every deny message. It claims output is audited and skill violations — including
-// badly written subagent briefs — are REJECTED. NO hook in this plugin performs that
-// audit; the warning is a behavioral deterrent only (the owner accepts the mismatch;
-// docs/RULES.md §3 documents it honestly). Owner rationale: models that believe
-// non-compliance is caught comply with the loaded skills' requirements more readily.
-const COMPLIANCE_WARNING =
-  " COMPLIANCE WARNING: all output is audited against the requirements of the skills applied in this " +
-  "session — work that violates them is REJECTED and must be redone. This explicitly covers dispatches: " +
-  "a subagent sent with a poorly written brief (violating prompt-engineering requirements — vague task, " +
-  "missing context/constraints, no report contract) will be REJECTED and must be re-dispatched."
+// Declarative compliance warning (ext 4, owner decision — "пугалка"): appended to every
+// deny message. Wording lives in DEFAULTS.messages.complianceWarning (including the
+// honesty note: NO hook audits output — deterrent only, docs/RULES.md §3); the trailer's
+// PRESENCE on every deny except the identical-loop deny is fixed in code (§E).
+const COMPLIANCE_WARNING = DEFAULTS.messages.complianceWarning
 
-const DENY_GENERAL =
-  'DENIED by dispatch-policy plugin: agent type "general" is FORBIDDEN by owner mandate. ' +
-  "Re-dispatch with a specialized agent type — e.g. code-reviewer, backend-architect, " +
-  "frontend-developer, trend-researcher (full list: opencode debug agents)." +
-  COMPLIANCE_WARNING
+// ext 6.7 / row-3 ban: the general-ban deny names the banned agent ({agent} template).
+function denyGeneral(agent: string): string {
+  return fill(DEFAULTS.messages.generalBan, { agent }) + COMPLIANCE_WARNING
+}
 
-const DENY_BACKGROUND =
-  "DENIED by dispatch-policy plugin: owner mandate requires background:true on every subagent " +
-  "dispatch. Re-dispatch the SAME call with background:true." +
-  COMPLIANCE_WARNING
+const DENY_BACKGROUND = DEFAULTS.messages.backgroundBan + COMPLIANCE_WARNING
 
 // ext 6.7: actionable deny for missing/empty agent (runtime would only produce the
 // generic schema error "Invalid arguments … agent: Missing key" — no policy guidance).
-const DENY_AGENT_MISSING =
-  "DENIED by dispatch-policy plugin: the dispatch is missing a specialized agent type " +
-  "(agent missing or empty). Pick a specialized agent type — e.g. backend-architect, " +
-  "code-reviewer, frontend-developer, trend-researcher (full list: opencode debug agents) — " +
-  "then re-run this exact call." +
-  COMPLIANCE_WARNING
+const DENY_AGENT_MISSING = DEFAULTS.messages.agentMissing + COMPLIANCE_WARNING
 
 // ext 6.1: fresh dispatch brief never instructs the subagent to read global memory.
-const DENY_MEMORY_MANDATE =
-  "DENIED by dispatch-policy plugin: the dispatch brief does not mandate reading global memory " +
-  "(owner hard dispatch protocol: every subagent brief must instruct the subagent to read " +
-  "~/.config/opencode/MEMORY.md + memory/topics/* + memory/projects/* and list what it read " +
-  "in its report). Add the memory mandate to the brief, then re-run this exact call." +
-  COMPLIANCE_WARNING
+const DENY_MEMORY_MANDATE = DEFAULTS.messages.memoryMandateFail + COMPLIANCE_WARNING
 
 // ext 6.6: whole-file `write` over an existing global memory file (last-writer-wins
 // rewrites destroyed memory entries in the 2026-10-09/10 incidents).
-const DENY_MEMORY_OVERWRITE =
-  "DENIED by dispatch-policy plugin: whole-file write over an EXISTING global memory file is " +
-  "forbidden — whole-file rewrites of memory race concurrent agents (2026-10-09/10 incidents). " +
-  "Append or supersede the entry via the `edit` tool instead (append-only by anchors; " +
-  "supersede-in-place, never full-file write). Creating a NEW memory file is allowed." +
-  COMPLIANCE_WARNING
+const DENY_MEMORY_OVERWRITE = DEFAULTS.messages.memoryOverwriteFail + COMPLIANCE_WARNING
 
 // ext 7.1: per-skill usage hint in the MCP→skill deny; an unmapped skill gets the
-// generic hint. The deny carries the shared COMPLIANCE_WARNING trailer and the re-run
-// instruction — loading the named skill and re-running the exact call is the recovery.
+// generic hint. Hints live in DEFAULTS.messages.mcpSkillHints.
 function mcpSkillHint(skill: string): string {
-  if (skill === "context7-mcp") return "for context7: resolve-library-id before query-docs"
-  if (skill === "adb-mcp") return "for adb-mcp: read the accessibility tree before tapping"
-  return "load it before driving this server"
+  return (DEFAULTS.messages.mcpSkillHints as Record<string, string>)[skill] ?? "load it before driving this server"
 }
 
 function denyMcpSkill(tool: string, skill: string): string {
   return (
-    `DENIED by dispatch-policy plugin: MCP tool "${tool}" requires its skill first. Invoke ` +
-    "`skill`" +
-    ` with id "${skill}" — it defines the correct usage of this server's tools (${mcpSkillHint(skill)}) — then re-run this exact call.` +
+    fill(DEFAULTS.messages.mcpSkillFail, { tool, skill, hint: mcpSkillHint(skill) }) +
     COMPLIANCE_WARNING
   )
 }
@@ -460,19 +346,16 @@ function denyMcpSkill(tool: string, skill: string): string {
 // ext 6.4: identical-dispatch circuit breaker — increment-then-check per session; the
 // deny fires when the count of identical fresh dispatches (same agent + prompt) reaches
 // IDENTICAL_CAP (3 identical executions pass, the 4th is denied). Owner approved 2026-10-25.
-const IDENTICAL_CAP = 4
+const IDENTICAL_CAP = DEFAULTS.caps.identicalMax
 
 // Deliberate deltas vs the analyst sketch, owner decision (ext-6.4 brief): this deny
 // carries NO COMPLIANCE_WARNING trailer (its "must be re-dispatched" wording contradicts
 // the guard) and NO "re-run this exact call" instruction (re-running is exactly what is
 // being denied). The deny is FINAL for identical resends: differentiate the briefs or
-// escalate. It is the plugin's only deny without the shared trailer (docs/RULES.md §3).
+// escalate. It is the plugin's only deny without the shared trailer (docs/RULES.md §3) —
+// the no-trailer rule is enforced HERE, not by template content.
 function denyIdenticalLoop(n: number): string {
-  return (
-    `DENIED by dispatch-policy plugin: identical dispatch sent ${n} times in this session — ` +
-    "runaway-loop guard on identical (agent, prompt) pairs. This deny is final for identical " +
-    "resends: differentiate the briefs (per-perspective prompts) or escalate to the owner."
-  )
+  return fill(DEFAULTS.messages.identicalLoopFail, { n: String(n) })
 }
 
 // ext 6.3: continuation-chain cap — increment-then-check per (parent session, child
@@ -480,12 +363,13 @@ function denyIdenticalLoop(n: number): string {
 // (6 continuations pass, the 7th is denied). Denied calls still increment, and
 // Variant A overrides still increment: the counter tracks reality. Owner approved
 // 2026-10-25 (Variant A: constant cap + visible one-shot escape, no config knob).
-const CHAIN_CAP = 6
+const CHAIN_CAP = DEFAULTS.caps.chainMax
 
 // Variant A escape (owner requirement 2026-10-25: adjustable without config edits): a
 // continuation that would exceed the cap is ALLOWED iff the prompt carries the marker
-// followed by a NON-EMPTY reason — a bare marker does not unlock.
-const CHAIN_OVERRIDE_RE = /\[chain-cap-override\]\s*\S/i
+// followed by a NON-EMPTY reason — a bare marker does not unlock. Compiled from
+// DEFAULTS.caps.chainOverrideMarker.
+const CHAIN_OVERRIDE_RE = buildChainOverrideRe(DEFAULTS.caps.chainOverrideMarker)
 
 // Unlike denyIdenticalLoop, this deny carries the COMPLIANCE_WARNING trailer and the
 // re-run instruction — here the re-run advice IS valid: re-running with the added
@@ -494,12 +378,7 @@ const CHAIN_OVERRIDE_RE = /\[chain-cap-override\]\s*\S/i
 // PR97 / PR111).
 function denyContinuationChain(n: number): string {
   return (
-    `DENIED by dispatch-policy plugin: this child-session continuation chain reached ${n} ` +
-    `continuations in one session (cap ${CHAIN_CAP}) — persistent-worker pumping of one child ` +
-    "session is the anti-pattern the owner bans (2026-09-20; PR97/PR111). Start a FRESH agent " +
-    "instead and hand off state via a git branch + a structured brief. To continue once beyond " +
-    "the cap deliberately, add [chain-cap-override] <reason> to the continuation prompt, then " +
-    "re-run this exact call." +
+    fill(DEFAULTS.messages.chainCapFail, { n: String(n), cap: String(CHAIN_CAP) }) +
     COMPLIANCE_WARNING
   )
 }
@@ -507,16 +386,15 @@ function denyContinuationChain(n: number): string {
 function denyStructure(target: string, missing: string[], profile: ReadonlyArray<BlockKey>): string {
   const guide = profile.map((key) => BLOCKS[key].name).join(" / ")
   return (
-    `DENIED by dispatch-policy plugin: prompt-structure check (per the prompt-engineering-patterns ` +
-    `skill) on the ${target} prompt failed. Missing required block(s): ${missing.join("; ")}. ` +
-    `Structure the prompt with explicit blocks: ${guide}. Then re-run this exact call.` +
-    COMPLIANCE_WARNING
+    fill(DEFAULTS.messages.structureFail, {
+      target,
+      missing: missing.join("; "),
+      blocks: guide,
+    }) + COMPLIANCE_WARNING
   )
 }
 
-const DESCRIPTION_HINT =
-  "\n\nPOLICY (enforced by the dispatch-policy plugin): every dispatch MUST pass " +
-  'background:true; agent type "general" is FORBIDDEN — pick a specialized agent type.'
+const DESCRIPTION_HINT = DEFAULTS.messages.descriptionHint
 
 function enforcementDisabled(): boolean {
   return process.env.OPENCODE_ENFORCE_OFF === "1"
@@ -534,7 +412,7 @@ export default Plugin.define({
         // the message teaches agent selection. "general" is a non-empty string, so the
         // ban below still wins for agent === "general".
         if (typeof input.agent !== "string" || input.agent.trim() === "") throw new Error(DENY_AGENT_MISSING)
-        if (input.agent === FORBIDDEN_AGENT) throw new Error(DENY_GENERAL)
+        if (input.agent === FORBIDDEN_AGENT) throw new Error(denyGeneral(input.agent))
         if (input.background !== true) throw new Error(DENY_BACKGROUND)
       }
       // Skill + memory gate: gated actions wait until this session loaded the
@@ -544,10 +422,7 @@ export default Plugin.define({
         const missing = gateMissing(event.sessionID, DISPATCH_TOOLS.has(event.tool))
         if (missing.length > 0) {
           throw new Error(
-            "Owner mandate: this action requires, in this session first: " +
-              missing.join("; ") +
-              ". Load skills via the `skill` tool (one call per skill); read memory files with the `read` tool. Then re-run this exact call." +
-              COMPLIANCE_WARNING,
+            fill(DEFAULTS.messages.gateMissing, { missing: missing.join("; ") }) + COMPLIANCE_WARNING,
           )
         }
         // ext 7.1: MCP→skill gate — AFTER the base skill/memory gate, BEFORE the ext-5
@@ -555,7 +430,7 @@ export default Plugin.define({
         // related skill gets the per-server deny with the usage hint. (A zero-state MCP
         // call never reaches this loop: the base deny above keeps precedence and already
         // lists context7-mcp among the mandatory skills.)
-        for (const [prefix, skill] of MCP_SKILL_REQUIREMENTS) {
+        for (const { prefix, skill } of DEFAULTS.gates.mcpRequirements) {
           if (event.tool.startsWith(prefix) && !loadedSkills.get(event.sessionID)?.has(skill)) {
             throw new Error(denyMcpSkill(event.tool, skill))
           }
@@ -673,7 +548,7 @@ export default Plugin.define({
     // by the editor (documented behavior), so a rename degrades to layers 1-3 only.
     await ctx.tool.transform((editor) => {
       if (enforcementDisabled()) return
-      editor.update("subagent", (tool) => {
+      editor.update(DEFAULTS.dispatch.tools[0], (tool) => {
         tool.description = tool.description + DESCRIPTION_HINT
       })
     })
