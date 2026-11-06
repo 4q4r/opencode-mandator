@@ -263,7 +263,7 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extensions 
     expect(transformed!.subagent.description).toContain("background:true")
   })
 
-  // --- primer: 12 bullets, both gate lines ---
+  // --- primer: 13 bullets (v2), both gate lines + v2 content assertions ---
   test("primer carries both gate lines (incl. memory + orchestrator line)", async () => {
     const sys: any[] = []
     await hooks["session.context"]({ system: sys, messages: [] })
@@ -272,13 +272,21 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extensions 
     expect(primer).toContain("subagent-driven-development")
     expect(primer).toContain("prompt-engineering-patterns")
     expect(primer).toContain("workflow-git-pr.md")
+    // PRIMER v2 (owner-approved 2026-11-06): cloakbrowser owner-lock, five-block
+    // brief-quality rules, orchestrator strengthening.
+    expect(primer).toContain("humanize=True")
+    expect(primer).toContain("human_preset=careful")
+    expect(primer).toContain("OWNER-LOCKED")
+    expect(primer).toContain("Role / Task / Context / Constraints / Output format")
+    expect(primer).toContain("no exceptions, not even mechanical fixes")
+    expect(primer).toContain("NEVER implements")
   })
 
-  test("primer bullet count = 12", async () => {
+  test("primer bullet count = 13", async () => {
     const sys: any[] = []
     await hooks["session.context"]({ system: sys, messages: [] })
     const primer = sys[0]?.text ?? ""
-    expect((primer.match(/^- /gm) ?? []).length).toBe(12)
+    expect((primer.match(/^- /gm) ?? []).length).toBe(13)
   })
 })
 

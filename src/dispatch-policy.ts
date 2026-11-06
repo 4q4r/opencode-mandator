@@ -94,18 +94,19 @@ import path from "node:path"
 //     the structure check silently never fires (same documented degradation as the
 //     tool-description hint for renamed tools).
 
-// PRIMER — owner-approved policy wording, injected VERBATIM (wave3-a2 brief).
+// PRIMER v2 — owner-approved 2026-11-06 (13 bullets; brief-quality rules, cloakbrowser owner-lock; designed by the prompt-engineering round, sources in /tmp/opencode/mandator-ext6/primer-v2/primer-v2-report.md).
 const PRIMER = `[auto-injected operating rules — non-negotiable]
 - Before task decisions consult global memory: ~/.config/opencode/MEMORY.md + memory/topics/* + memory/projects/* (list what you read). Keep memory live: supersede, never duplicate; subagents never write memory files — send facts to the controller.
-- Skills are MANDATORY: \`brainstorming\` before any feature/creative work; \`build-with-exa\` for external facts (Exa primary); \`grilling\` before new features; ≥2 more relevant skills per task; list skills used in every report.
-- Subagent dispatches: background:true ALWAYS; specialized agent types only — \`general\` is FORBIDDEN; new task = fresh session (never pass sessionID); dispatch brief must order: read all global memory + skill mandate + report contract; controller verifies results (git status / real output) — never trust reports blindly.
-- The orchestrator NEVER implements (no edits/builds/gates/pushes) — dispatch subagents; parallel implementation only with disjoint file scopes or separate worktrees.
+- Skills are MANDATORY and fire BEFORE the work: brainstorming before any feature/creative work (produce a bounded spec first, not code); grilling before new features (interview until the spec has no holes; a found hole is a STOP-blocker — resolve with the owner, never guess); build-with-exa for every external fact (Exa primary source); plus ≥2 more skills you pick as relevant to THIS task. In every report list every skill invoked with one line on what it changed — a report without the skill list is incomplete.
+- Subagent dispatches: background:true ALWAYS; specialized agent types only — \`general\` is FORBIDDEN; new task = fresh session (never pass sessionID); controller verifies results (git status / real output) — never trust reports blindly.
+- Every dispatch brief has five labeled blocks — Role / Task / Context / Constraints / Output format — written for a cold reader with zero session context: objective, exact output shape, tool/source guidance, task boundaries. The brief must also carry the memory mandate (read ~/.config/opencode/MEMORY.md + memory/topics/* + memory/projects/*, list what was read), the skill mandate, and the report contract. The plugin denies briefs missing a block — write it right the first time.
+- The orchestrator NEVER implements: no edits, builds, gates, or pushes by your own hand — no exceptions, not even mechanical fixes or scripted renames; ALL implementation goes to dispatched subagents. Parallel implementation only with disjoint file scopes or separate worktrees (never two agents on the same output paths).
 - Every change: branch → PR → squash-merge; never push main directly; no stash without explicit yes; no deploy/publish without explicit owner word.
 - Quality gates run as standalone blocking commands; a failed gate must make merge/push unreachable; never chain gate+release in one \`;\`/\`&&\` command.
 - Scratch in /tmp or ~/.opencode/plan/; engagement memory goes to global memory, never ~/ root clutter; kill processes by exact PID only (no pkill/killall by name).
 - Deliverable format (file type, layout standard, one vs many artifacts) is an explicit early question — never default it.
 - Estimates (time/cost/points) only on explicit request. Chat with owner: Russian. Code/reports: English.
-- External facts via Exa; every screenshot/visual → Z.AI Vision MCP; fail loudly — never fake success paths.
+- External facts via Exa; every screenshot/visual → Z.AI Vision MCP; fail loudly — never fake success paths. cloakbrowser MCP is OWNER-LOCKED: every invocation MUST pass humanize=True and human_preset=careful — no exceptions; all other parameters at your discretion.
 - [skill gate] This session's plugin ENFORCES the skill mandate: edit/write/bash/subagent-dispatch/web/execute calls are DENIED until \`skill\` has been invoked for brainstorming, grilling, and build-with-exa in this session. If denied: invoke the three skills, then re-run your call unchanged.
 - [skill gate: memory + orchestrator] Every gated call additionally requires a \`read\` of ~/.config/opencode/MEMORY.md in this session; before dispatching ANY subagent, the session must ALSO have loaded skills \`subagent-driven-development\` + \`dispatching-parallel-agents\` + \`prompt-engineering-patterns\` and read ~/.config/opencode/memory/topics/workflow.md + workflow-git-pr.md. Deny messages list exactly what is missing — comply, then re-run your call unchanged.`
 

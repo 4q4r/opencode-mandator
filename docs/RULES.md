@@ -196,7 +196,7 @@ workflow reads.
 
 | :-- | Layer | Behavior |
 | :-- | :-- | :-- |
-| 1 | Primer injection | `session.context` hook pushes the owner-approved PRIMER (12 bullets) as a system text part before **every** model request; survives compaction (system parts reassembled per request). |
+| 1 | Primer injection | `session.context` hook pushes the owner-approved PRIMER (13 bullets; includes the cloakbrowser owner-lock: humanize=True + human_preset=careful on every invocation, and the five-block dispatch-brief quality rules — normative spec: docs/BRIEFS.md) as a system text part before **every** model request; survives compaction (system parts reassembled per request). |
 | 2 | Tool description hint | One policy line appended to the `subagent` tool description at selection time (missing tool IDs are ignored by the editor — a rename degrades to the interception layers only). |
 
 ## 5. Safety valves and failure modes
