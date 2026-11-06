@@ -75,12 +75,13 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extensions 
   })
 
   // --- Zero state ---
-  test("shell DENIED at zero; lists 3 skills + MEMORY.md; no orchestrator items", async () => {
+  test("shell DENIED at zero; lists 4 skills + MEMORY.md; no orchestrator items", async () => {
     const msg = await denyMsg({ tool: "shell", sessionID: S, input: {} })
     expect(msg).not.toBeNull()
     expect(msg!).toContain('skill "brainstorming"')
     expect(msg!).toContain('skill "grilling"')
     expect(msg!).toContain('skill "build-with-exa"')
+    expect(msg!).toContain('skill "context7-mcp"') // ext 7.1: joins the mandatory set
     expect(msg!).toContain("read of ~/.config/opencode/MEMORY.md")
     expect(msg!).not.toContain("subagent-driven-development")
     expect(msg!).not.toContain("prompt-engineering-patterns")
@@ -92,6 +93,7 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extensions 
     const msg = await denyMsg({ tool: "subagent", sessionID: S, input: { agent: "code-reviewer", background: true } })
     expect(msg).not.toBeNull()
     expect(msg!).toContain('skill "brainstorming"')
+    expect(msg!).toContain('skill "context7-mcp"') // ext 7.1: joins the mandatory set
     expect(msg!).toContain('skill "subagent-driven-development"')
     expect(msg!).toContain('skill "dispatching-parallel-agents"')
     expect(msg!).toContain('skill "prompt-engineering-patterns"')
@@ -100,14 +102,16 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extensions 
   })
 
   // --- skills loaded, memory unread → deny lists ONLY the memory read ---
-  test("3/3 skills but memory unread → deny lists exactly the MEMORY.md read", async () => {
+  test("4/4 skills but memory unread → deny lists exactly the MEMORY.md read", async () => {
     loadSkill(S, "brainstorming")
     loadSkill(S, "grilling")
     loadSkill(S, "build-with-exa")
+    loadSkill(S, "context7-mcp")
     const msg = await denyMsg({ tool: "edit", sessionID: S, input: {} })
     expect(msg).not.toBeNull()
     expect(msg!).toContain("read of ~/.config/opencode/MEMORY.md")
     expect(msg!).not.toContain('skill "brainstorming"')
+    expect(msg!).not.toContain('skill "context7-mcp"')
     expect(msg!).not.toContain("workflow")
   })
 
@@ -152,6 +156,7 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extensions 
     expect(msg!).toContain("read of ~/.config/opencode/memory/topics/workflow.md")
     expect(msg!).toContain("read of ~/.config/opencode/memory/topics/workflow-git-pr.md")
     expect(msg!).not.toContain('skill "brainstorming"')
+    expect(msg!).not.toContain('skill "context7-mcp"') // base set (now 4 skills) fully satisfied
     expect(msg!).not.toContain("MEMORY.md")
   })
 
@@ -180,7 +185,7 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extensions 
   })
 
   // --- full compliance → subagent passes (workflow-git-pr via absolute path) ---
-  test("full compliance (6 skills + 3 reads) lifts the dispatch gate", async () => {
+  test("full compliance (7 skills + 3 reads) lifts the dispatch gate", async () => {
     loadSkill(S, "subagent-driven-development")
     loadSkill(S, "prompt-engineering-patterns")
     loadRead(S, `${HOME}/.config/opencode/memory/topics/workflow-git-pr.md`)
@@ -218,6 +223,7 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extensions 
     const msg = await denyMsg({ tool: "shell", sessionID: "sess-other", input: {} })
     expect(msg).not.toBeNull()
     expect(msg!).toContain('skill "brainstorming"')
+    expect(msg!).toContain('skill "context7-mcp"') // ext 7.1: joins the mandatory set
     expect(msg!).toContain("read of ~/.config/opencode/MEMORY.md")
   })
 
@@ -241,6 +247,7 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extensions 
     const msg = await denyMsg({ tool: "execute", sessionID: "sess-execute", input: { code: "return 1" } })
     expect(msg).not.toBeNull()
     expect(msg!).toContain('skill "brainstorming"')
+    expect(msg!).toContain('skill "context7-mcp"') // ext 7.1: joins the mandatory set
     expect(msg!).toContain("read of ~/.config/opencode/MEMORY.md")
   })
 
@@ -272,6 +279,8 @@ describe("dispatch-policy — port of the wave3-a2 probe suite (gate extensions 
     expect(primer).toContain("subagent-driven-development")
     expect(primer).toContain("prompt-engineering-patterns")
     expect(primer).toContain("workflow-git-pr.md")
+    // ext 7.1 sync: context7-mcp in the skill mandate + the [skill gate] bullet.
+    expect(primer).toContain("context7-mcp")
     // PRIMER v2 (owner-approved 2026-11-06): cloakbrowser owner-lock, five-block
     // brief-quality rules, orchestrator strengthening.
     expect(primer).toContain("humanize=True")
@@ -298,6 +307,7 @@ describe("dispatch-policy — ext 5 prompt-structure gate", () => {
       "brainstorming",
       "grilling",
       "build-with-exa",
+      "context7-mcp",
       "subagent-driven-development",
       "dispatching-parallel-agents",
       "prompt-engineering-patterns",
@@ -410,6 +420,7 @@ describe("dispatch-policy — ext 6 wave 1 (memory mandate, memory-overwrite gua
       "brainstorming",
       "grilling",
       "build-with-exa",
+      "context7-mcp",
       "subagent-driven-development",
       "dispatching-parallel-agents",
       "prompt-engineering-patterns",
@@ -658,6 +669,7 @@ describe("dispatch-policy — ext 6.4 identical-dispatch circuit breaker", () =>
       "brainstorming",
       "grilling",
       "build-with-exa",
+      "context7-mcp",
       "subagent-driven-development",
       "dispatching-parallel-agents",
       "prompt-engineering-patterns",
@@ -847,6 +859,7 @@ describe("dispatch-policy — ext 6.3 continuation-chain cap (Variant A)", () =>
       "brainstorming",
       "grilling",
       "build-with-exa",
+      "context7-mcp",
       "subagent-driven-development",
       "dispatching-parallel-agents",
       "prompt-engineering-patterns",
@@ -992,5 +1005,101 @@ describe("dispatch-policy — ext 6.3 continuation-chain cap (Variant A)", () =>
     for (let i = 1; i <= 6; i++) {
       expect(await dispatch(sid, "code-reviewer", `step ${i}`, "ses_child63ord")).toBeNull()
     }
+  })
+})
+
+// --- ext 7.1: context7-mcp joins the mandatory skill set + MCP→skill gate (owner
+// approved 2026-11-07). MCP_SKILL_REQUIREMENTS maps flat MCP tool-name prefixes to the
+// skill that teaches the server's correct usage: "context7" → context7-mcp, "adb_mcp" →
+// adb-mcp (server "adb-mcp" → prefix "adb_mcp_" under the V2 "<server>_<tool>"
+// convention; the context7 tools are context7_resolve_library_id / context7_query_docs).
+// The prefixes extend the gated set, so a zero-state MCP call receives the BASE deny
+// (listing every mandatory item incl. the new context7-mcp) and the MCP-specific
+// message fires only on top of a base-complete session — compliance-teaching denies
+// keep precedence. The "context7" mapping is deliberately INERT while context7-mcp is
+// mandatory (the base gate already requires it for every gated call); it stays in the
+// table for message specificity + future-proofing. The live enforcement of the gate is
+// the adb_mcp entry. Deliberately NO mappings for zai-mcp-server / cloakbrowser /
+// stitch / ssh-any / circumvention-corpus — no related skills exist (docs/BACKLOG.md).
+describe("dispatch-policy — ext 7.1 MCP→skill gate + context7-mcp mandatory", () => {
+  const complyAll71 = (sid: string) => {
+    for (const s of ["brainstorming", "grilling", "build-with-exa", "context7-mcp"]) loadSkill(sid, s)
+    loadRead(sid, `${HOME}/.config/opencode/MEMORY.md`)
+    loadRead(sid, `${HOME}/.config/opencode/memory/topics/workflow.md`)
+    loadRead(sid, `${HOME}/.config/opencode/memory/topics/workflow-git-pr.md`)
+  }
+
+  test("zero-state context7 tool → base-gate message wins and lists skill \"context7-mcp\"", async () => {
+    const m = await denyMsg({ tool: "context7_resolve_library_id", sessionID: "sess-ext71-zero", input: {} })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("Owner mandate") // the base deny — compliance-teaching precedence
+    expect(m!).toContain('skill "context7-mcp"')
+    expect(m!).toContain("read of ~/.config/opencode/MEMORY.md")
+    expect(m!).not.toContain("requires its skill first") // not the MCP-specific message
+  })
+
+  test("compliance-complete adb_mcp_connect_device (adb-mcp NOT loaded) → MCP deny with the accessibility-tree hint", async () => {
+    const sid = "sess-ext71-adb"
+    complyAll71(sid)
+    const m = await denyMsg({ tool: "adb_mcp_connect_device", sessionID: sid, input: {} })
+    expect(m).not.toBeNull()
+    expect(m!).toContain('MCP tool "adb_mcp_connect_device"')
+    expect(m!).toContain("requires its skill first")
+    expect(m!).toContain('with id "adb-mcp"')
+    expect(m!).toContain("read the accessibility tree before tapping")
+  })
+
+  test("after loading adb-mcp the same call passes", async () => {
+    const sid = "sess-ext71-adb-pass"
+    complyAll71(sid)
+    loadSkill(sid, "adb-mcp")
+    const m = await denyMsg({ tool: "adb_mcp_connect_device", sessionID: sid, input: {} })
+    expect(m).toBeNull()
+  })
+
+  test("bare-prefix safety: git_push never gates; context7docs_read (bare startsWith, no `_` boundary) gates", async () => {
+    // A non-MCP tool shaped like an MCP name matches no prefix: at a compliance-complete
+    // session WITHOUT adb-mcp it passes — the adb gate does not fire on it.
+    const sid = "sess-ext71-prefix"
+    complyAll71(sid)
+    expect(await denyMsg({ tool: "git_push", sessionID: sid, input: {} })).toBeNull()
+    // Bare startsWith semantics: a tool merely STARTING with "context7" IS treated as the
+    // mapped server family — gated. At zero state it receives the base deny...
+    const m0 = await denyMsg({ tool: "context7docs_read", sessionID: "sess-ext71-prefix-zero", input: {} })
+    expect(m0).not.toBeNull()
+    expect(m0!).toContain("Owner mandate")
+    expect(m0!).toContain('skill "context7-mcp"')
+    // ...and at compliance-complete it passes: the mapping does not deny its own family
+    // once the required skill is present.
+    expect(await denyMsg({ tool: "context7docs_read", sessionID: sid, input: {} })).toBeNull()
+  })
+
+  test("context7 mapping inertness: context7_query_docs passes at compliance-complete; zero-state gets the base message, not the MCP message", async () => {
+    const sid = "sess-ext71-inert"
+    complyAll71(sid) // includes context7-mcp (mandatory)
+    expect(await denyMsg({ tool: "context7_query_docs", sessionID: sid, input: {} })).toBeNull()
+    const m0 = await denyMsg({ tool: "context7_query_docs", sessionID: "sess-ext71-inert-zero", input: {} })
+    expect(m0).not.toBeNull()
+    expect(m0!).toContain("Owner mandate")
+    expect(m0!).not.toContain("requires its skill first")
+  })
+
+  test("the MCP deny carries the COMPLIANCE WARNING trailer and the re-run instruction", async () => {
+    const sid = "sess-ext71-trailer"
+    complyAll71(sid)
+    const m = await denyMsg({ tool: "adb_mcp_list_artifacts", sessionID: sid, input: { test_name: "t" } })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("requires its skill first")
+    expect(m!).toContain("COMPLIANCE WARNING")
+    expect(m!).toContain("re-run this exact call")
+  })
+
+  test("primer stays in sync: context7-mcp in the skill mandate, gate bullet names the four skills", async () => {
+    const sys: any[] = []
+    await hooks["session.context"]({ system: sys, messages: [] })
+    const primer = sys[0]?.text ?? ""
+    expect(primer).toContain("context7-mcp before touching the context7 MCP")
+    expect(primer).toContain("brainstorming, grilling, build-with-exa, and context7-mcp")
+    expect(primer).toContain("invoke the four skills")
   })
 })

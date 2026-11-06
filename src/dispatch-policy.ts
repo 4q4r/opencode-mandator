@@ -13,10 +13,11 @@ import path from "node:path"
 //   3. Inject the owner-approved PRIMER as a system text part before every model request.
 //   4. Append a one-line policy hint to the subagent tool description (selection-time
 //      prevention, layered on top of the interception above).
-//   5. Skill gate (ext 1-2): gated tool calls are DENIED until the session invoked
-//      `skill` for brainstorming, grilling, build-with-exa. Gated set: edit, write,
-//      shell(+bash, apply_patch legacy), subagent, webfetch, websearch, execute
-//      (Code Mode — can compose tools.exa.* internally), MCP tools matching /exa/.
+//   5. Skill gate (ext 1-2 + 7.1): gated tool calls are DENIED until the session invoked
+//      `skill` for brainstorming, grilling, build-with-exa, context7-mcp. Gated set:
+//      edit, write, shell(+bash, apply_patch legacy), subagent, webfetch, websearch,
+//      execute (Code Mode — can compose tools.exa.* internally), MCP tools matching
+//      /exa/, plus MCP tools with a skill requirement (layer 14 prefixes).
 //   6. Memory-read prerequisite + orchestrator preflight (ext 3): every gated call
 //      additionally requires a completed `read` of ~/.config/opencode/MEMORY.md in
 //      this session; subagent dispatches additionally require skills
@@ -70,6 +71,21 @@ import path from "node:path"
 //      never consumes the cap). The deny carries the live count, the fresh-agent
 //      recovery, the marker instruction, and the shared COMPLIANCE_WARNING trailer
 //      (here the re-run advice IS valid — re-run with the marker).
+//  14. MCP→skill gate (ext 7.1): an MCP tool whose server has a related skill is DENIED
+//      until that skill is loaded in the session. MCP_SKILL_REQUIREMENTS matches by
+//      PREFIX on the flat MCP tool name (V2 convention "<server>_<tool>", unsupported
+//      chars → "_": server "adb-mcp" → prefix "adb_mcp_"; the context7 tools are
+//      "context7_resolve_library_id" / "context7_query_docs"). The prefixes also extend
+//      the gated set (layer 5), so a zero-state MCP call receives the BASE deny — the
+//      MCP-specific message fires only on top of a base-complete session, keeping
+//      compliance-teaching denies first. Check site: inside the gated-call flow, AFTER
+//      the base skill/memory gate, BEFORE the ext-5 structure chain. Honest note: the
+//      "context7" entry cannot fire while context7-mcp is mandatory (the base gate
+//      already requires it for every gated call) — kept for message specificity +
+//      future-proofing if the mandatory set ever changes; the live enforcement of this
+//      gate is the "adb_mcp" entry. No mappings for the five skill-less MCP servers
+//      (zai-mcp-server, cloakbrowser, stitch, ssh-any, circumvention-corpus) —
+//      docs/BACKLOG.md.
 //
 // Safety valves:
 //   - OPENCODE_ENFORCE_OFF=1 disables all plugin behavior (checked per hook call).
@@ -95,9 +111,10 @@ import path from "node:path"
 //     tool-description hint for renamed tools).
 
 // PRIMER v2 — owner-approved 2026-11-06 (13 bullets; brief-quality rules, cloakbrowser owner-lock; designed by the prompt-engineering round, sources in /tmp/opencode/mandator-ext6/primer-v2/primer-v2-report.md).
+// ext-7.1 sync (2026-11-07): context7-mcp joins the skill mandate (bullet 2) and the [skill gate] bullet — mirror bullets follow live deny behavior (PR #7 rule); 13 bullets kept, word delta ≤25.
 const PRIMER = `[auto-injected operating rules — non-negotiable]
 - Before task decisions consult global memory: ~/.config/opencode/MEMORY.md + memory/topics/* + memory/projects/* (list what you read). Keep memory live: supersede, never duplicate; subagents never write memory files — send facts to the controller.
-- Skills are MANDATORY and fire BEFORE the work: brainstorming before any feature/creative work (produce a bounded spec first, not code); grilling before new features (interview until the spec has no holes; a found hole is a STOP-blocker — resolve with the owner, never guess); build-with-exa for every external fact (Exa primary source); plus ≥2 more skills you pick as relevant to THIS task. In every report list every skill invoked with one line on what it changed — a report without the skill list is incomplete.
+- Skills are MANDATORY and fire BEFORE the work: brainstorming before any feature/creative work (produce a bounded spec first, not code); grilling before new features (interview until the spec has no holes; a found hole is a STOP-blocker — resolve with the owner, never guess); build-with-exa for every external fact (Exa primary source); context7-mcp before touching the context7 MCP (resolve-library-id before query-docs); plus ≥2 more skills you pick as relevant to THIS task. In every report list every skill invoked with one line on what it changed — a report without the skill list is incomplete.
 - Subagent dispatches: background:true ALWAYS; specialized agent types only — \`general\` is FORBIDDEN; new task = fresh session (never pass sessionID); controller verifies results (git status / real output) — never trust reports blindly.
 - Every dispatch brief has five labeled blocks — Role / Task / Context / Constraints / Output format — written for a cold reader with zero session context: objective, exact output shape, tool/source guidance, task boundaries. The brief must also carry the memory mandate (read ~/.config/opencode/MEMORY.md + memory/topics/* + memory/projects/*, list what was read), the skill mandate, and the report contract. The plugin denies briefs missing a block — write it right the first time.
 - The orchestrator NEVER implements: no edits, builds, gates, or pushes by your own hand — no exceptions, not even mechanical fixes or scripted renames; ALL implementation goes to dispatched subagents. Parallel implementation only with disjoint file scopes or separate worktrees (never two agents on the same output paths).
@@ -107,7 +124,7 @@ const PRIMER = `[auto-injected operating rules — non-negotiable]
 - Deliverable format (file type, layout standard, one vs many artifacts) is an explicit early question — never default it.
 - Estimates (time/cost/points) only on explicit request. Chat with owner: Russian. Code/reports: English.
 - External facts via Exa; every screenshot/visual → Z.AI Vision MCP; fail loudly — never fake success paths. cloakbrowser MCP is OWNER-LOCKED: every invocation MUST pass humanize=True and human_preset=careful — no exceptions; all other parameters at your discretion.
-- [skill gate] This session's plugin ENFORCES the skill mandate: edit/write/bash/subagent-dispatch/web/execute calls are DENIED until \`skill\` has been invoked for brainstorming, grilling, and build-with-exa in this session. If denied: invoke the three skills, then re-run your call unchanged.
+- [skill gate] This session's plugin ENFORCES the skill mandate: edit/write/bash/subagent-dispatch/web/execute calls are DENIED until \`skill\` has been invoked for brainstorming, grilling, build-with-exa, and context7-mcp in this session. If denied: invoke the four skills, then re-run your call unchanged.
 - [skill gate: memory + orchestrator] Every gated call additionally requires a \`read\` of ~/.config/opencode/MEMORY.md in this session; before dispatching ANY subagent, the session must ALSO have loaded skills \`subagent-driven-development\` + \`dispatching-parallel-agents\` + \`prompt-engineering-patterns\` and read ~/.config/opencode/memory/topics/workflow.md + workflow-git-pr.md. Deny messages list exactly what is missing — comply, then re-run your call unchanged.`
 
 const DISPATCH_TOOLS = new Set(["subagent"])
@@ -136,7 +153,27 @@ const GATED_TOOLS = new Set([
   "execute",
 ])
 
-const MANDATORY_SKILLS = ["brainstorming", "grilling", "build-with-exa"] as const
+// ext 7.1 (owner decision "каждого агента", 2026-11-07): context7-mcp joins the
+// mandatory set — every gated call now requires all four skills + the MEMORY.md read.
+const MANDATORY_SKILLS = ["brainstorming", "grilling", "build-with-exa", "context7-mcp"] as const
+
+// ext 7.1: MCP→skill gate — an MCP tool may not be driven without its related skill.
+// PREFIX match on the flat MCP tool name (V2 convention "<server>_<tool>", unsupported
+// chars → "_": server "adb-mcp" → prefix "adb_mcp_"; the context7 tools are
+// "context7_resolve_library_id" / "context7_query_docs"). The prefixes ALSO extend the
+// gated set (isGatedTool), mirroring the exa-substring treatment: the base gate covers
+// these MCP tools and the MCP-specific deny layers on top of a base-complete session.
+// HONEST NOTE: the "context7" entry cannot fire while context7-mcp is mandatory — the
+// base gate already requires context7-mcp for every gated call — it is kept in the
+// table for message specificity + future-proofing if the mandatory set ever changes;
+// the live enforcement of this gate is the "adb_mcp" entry. Deliberately NO mappings
+// for zai-mcp-server / cloakbrowser / stitch / ssh-any / circumvention-corpus: no
+// related skills exist in the system (owner informed 2026-11-07; authoring them is
+// tracked in docs/BACKLOG.md).
+const MCP_SKILL_REQUIREMENTS: ReadonlyArray<[string, string]> = [
+  ["context7", "context7-mcp"],
+  ["adb_mcp", "adb-mcp"],
+]
 
 // --- Gate extension 3: memory-read verification + orchestrator dispatch preflight ---
 // Base gate prerequisite: root MEMORY.md read in this session (owner-accepted proxy
@@ -322,6 +359,10 @@ export const _djb2 = { fn: djb2 }
 function isGatedTool(tool: string): boolean {
   if (GATED_TOOLS.has(tool)) return true
   if (tool.includes("exa")) return true // MCP exa tools appear as exa_<...>_exa
+  // ext 7.1: MCP servers with a skill requirement are gated tools — the base gate
+  // teaches the full mandatory list at zero state; the MCP-specific gate (below) layers
+  // the per-server requirement on top of a base-complete session.
+  if (MCP_SKILL_REQUIREMENTS.some(([prefix]) => tool.startsWith(prefix))) return true
   return false
 }
 
@@ -397,6 +438,24 @@ const DENY_MEMORY_OVERWRITE =
   "Append or supersede the entry via the `edit` tool instead (append-only by anchors; " +
   "supersede-in-place, never full-file write). Creating a NEW memory file is allowed." +
   COMPLIANCE_WARNING
+
+// ext 7.1: per-skill usage hint in the MCP→skill deny; an unmapped skill gets the
+// generic hint. The deny carries the shared COMPLIANCE_WARNING trailer and the re-run
+// instruction — loading the named skill and re-running the exact call is the recovery.
+function mcpSkillHint(skill: string): string {
+  if (skill === "context7-mcp") return "for context7: resolve-library-id before query-docs"
+  if (skill === "adb-mcp") return "for adb-mcp: read the accessibility tree before tapping"
+  return "load it before driving this server"
+}
+
+function denyMcpSkill(tool: string, skill: string): string {
+  return (
+    `DENIED by dispatch-policy plugin: MCP tool "${tool}" requires its skill first. Invoke ` +
+    "`skill`" +
+    ` with id "${skill}" — it defines the correct usage of this server's tools (${mcpSkillHint(skill)}) — then re-run this exact call.` +
+    COMPLIANCE_WARNING
+  )
+}
 
 // ext 6.4: identical-dispatch circuit breaker — increment-then-check per session; the
 // deny fires when the count of identical fresh dispatches (same agent + prompt) reaches
@@ -490,6 +549,16 @@ export default Plugin.define({
               ". Load skills via the `skill` tool (one call per skill); read memory files with the `read` tool. Then re-run this exact call." +
               COMPLIANCE_WARNING,
           )
+        }
+        // ext 7.1: MCP→skill gate — AFTER the base skill/memory gate, BEFORE the ext-5
+        // structure chain. A base-complete session driving an MCP tool without its
+        // related skill gets the per-server deny with the usage hint. (A zero-state MCP
+        // call never reaches this loop: the base deny above keeps precedence and already
+        // lists context7-mcp among the mandatory skills.)
+        for (const [prefix, skill] of MCP_SKILL_REQUIREMENTS) {
+          if (event.tool.startsWith(prefix) && !loadedSkills.get(event.sessionID)?.has(skill)) {
+            throw new Error(denyMcpSkill(event.tool, skill))
+          }
         }
       }
       // Ext 5: prompt-structure gate — AFTER the skill gate (compliance first: the
