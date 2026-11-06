@@ -1,0 +1,9 @@
+{
+  "name": "dispatch-policy",
+  "private": true,
+  "description": "Package-directory entry for the dispatch-policy enforcement plugin (Flexibility Phase 1 dual-mode layout, design §D.1): the object-form `plugins` entry in opencode.json points at THIS directory, and OpenCode resolves the plugin through these exports. Options ride only on the object form — the file-discovery symlink (install.sh default) can never carry them.",
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  }
+}
