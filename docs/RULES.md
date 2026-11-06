@@ -214,3 +214,116 @@ workflow reads.
   `rm ~/.config/opencode/plugin/dispatch-policy.ts`, then reinstall from the repo.
 - **Atomic install only**: never multi-edit the live file (interim states get
   hot-reloaded). `install.sh` enforces single `mv` installs by construction.
+
+## 6. Configuration (Flexibility Phase 1)
+
+The plugin reads `options` from the **object form** of the `plugins` array entry in
+`opencode.json` (string entries and file-discovered plugins carry no options).
+`ctx.options` is an untyped flat JSON record — this plugin owns 100% of validation,
+defaults, and error handling (`src/config.ts` → `resolveOptions`). Phase 1 wires the
+**11 enforcement knobs** below; the remaining taxonomy groups (`structure`, `paths`,
+`messages`, `primer`) exist in `src/defaults.ts` and are wired in Phase 2/3 — if
+present in `options` today they are **warned + ignored**. With NO options the resolved
+config is byte-identical to the pre-Phase-1 hardcodes (the baseline test suite is the
+parity contract).
+
+### 6.1 Loading modes, precedence, restart rule
+
+| :-- | Mode | Options | Notes |
+| :-- | :-- | :-- | :-- |
+| File-discovery (default install) | `~/.config/opencode/plugin/dispatch-policy.ts` symlink → repo file (`install.sh` default) | never (`ctx.options` absent ⇒ pure defaults) | unchanged behavior |
+| Package mode (the configurable path) | object form: `{ "package": "<repo>/plugin-package", "options": { … } }` | yes | `plugin-package/` is a directory with `package.json` (`name: "dispatch-policy"`) re-exporting the plugin; configured local package paths must be directories — a single file path is skipped by the loader |
+
+- **One mode at a time**: the symlink file AND a `plugins`-array entry for the same
+  plugin are BOTH loaded when they coexist (observed live 2026-11-07 via
+  `opencode plugin list`: two registration rows for the same id) — PRIMER injected
+  twice, hooks duplicated. Switching = remove one AND add the other in the same step,
+  then restart and verify primer-once.
+- **Precedence (v1)**: configure the plugin exactly once, in the **global**
+  `~/.config/opencode/opencode.json(c)`. Per-project options are out of scope for v1
+  (undocumented global/project merge semantics; owner ruling 6).
+- **Restart rule**: applying any option change = plugin reload = per-session
+  compliance state cleared (all sessions re-gate; fail-closed by design). Live apply =
+  `opencode service restart` (reload does not replace the ES module — verified
+  2026-10-25). Operator rule: edit config → restart.
+- **Recovery ladder**: bad config ⇒ fix `opencode.json` + restart; hard brick ⇒
+  `OPENCODE_ENFORCE_OFF=1` + restart; last resort ⇒ remove the plugin entry/file +
+  restart.
+- `install.sh --package` verifies the package entry imports (bun, live install
+  untouched), prints the ready-to-paste global-config snippet with the double-load
+  warning, and points at `scripts/probe-options.sh` for the end-to-end options probe.
+
+### 6.2 Option table (Phase 1 — 11 knobs)
+
+| :-- | Option | Type | Default (= today) | Effect when overridden |
+| :-- | :-- | :-- | :-- | :-- |
+| 1 | `dispatch.tools` | `string[]` | `["subagent"]` | Which tool names are dispatch-shaped (bans, structure gate, breakers, tool-description hint targets the first entry); `[]` = dispatch guards inert |
+| 2 | `dispatch.forbiddenAgents` | `string[]` | `["general"]` | The agent ban list — a dispatch is denied when `agent` matches ANY entry; `[]` = no agent ban |
+| 3 | `dispatch.requireBackground` | `boolean` | `true` | `false` stops denying `background !== true` |
+| 4 | `dispatch.requireAgent` | `boolean` | `true` | `false` disables the agent-missing deny (the general ban is independent) |
+| 5 | `skills.mandatory` | `string[]` | 4 skills (brainstorming, grilling, build-with-exa, context7-mcp) | The base gate's required skill list; `[]` = valid + startup warning, base gate inert **for skills** (the MEMORY.md read still applies — it is a `readTargets` concern, Phase 2) |
+| 6 | `skills.orchestrator` | `string[]` | 3 skills (subagent-driven-development, dispatching-parallel-agents, prompt-engineering-patterns) | Extra skills required on the dispatch path only; `[]` = valid + startup warning, orchestrator skills waived (the workflow reads stay — same Phase-2 note) |
+| 7 | `gates.tools` | `string[]` | 9 names (edit, write, shell, bash, apply_patch, subagent, webfetch, websearch, execute) | The exact-match gated set (authoritative); `[]` removes exact-match entries — the exa substring rule and MCP skill-requirement prefixes still gate (Phase 2 knobs) |
+| 8 | `gates.exaSubstring` | `string \| null` | `"exa"` | Generalizes `tool.includes(<value>)`; `null` removes the substring rule (explicit MCP prefixes only) |
+| 9 | `caps.identicalMax` | `number ≥ 1 \| null` | `4` | Identical-dispatch breaker threshold (increment-then-check, per-session, fresh-only); `null` = breaker off |
+| 10 | `caps.chainMax` | `number ≥ 1 \| null` | `6` | Continuation-chain cap per (parent, child); counter semantics unchanged; `null` = cap off |
+| 11 | `caps.chainOverrideMarker` | `string` (non-empty) | `"[chain-cap-override]"` | The Variant-A escape token (marker + non-empty reason); compiled to `escape(marker) + \s*\S/i` per setup |
+
+### 6.3 Validation and failure semantics (owner rulings 2026-11-07 — hybrid)
+
+- **Enforcement groups fail closed per guard** (`dispatch`, `skills`, `gates`, `caps`):
+  an invalid option in a group makes THAT guard deny affected calls with a
+  `CONFIG-ERROR` deny naming the option path, e.g.
+  `DENIED by dispatch-policy plugin: [config-error] caps.chainMax must be a positive integer or null (got "abc"); guard running with effective cap 1. Fix the plugin options in opencode.json, run \`opencode service restart\`, then re-run this exact call.` + the shared COMPLIANCE WARNING trailer. Other guards are unaffected.
+- **Invalid cap ⇒ effective cap 1 + CONFIG-ERROR deny** — never "guard off". An invalid
+  `caps.chainOverrideMarker` fails the chain guard closed for over-cap continuations
+  (the one-shot escape cannot be evaluated); under-cap continuations pass normally.
+- **Broken-group scoping**: a broken `dispatch`/`gates` group still scopes its
+  CONFIG-ERROR denies at the calls the DEFAULT config would have covered (the broken
+  values are never used to widen or narrow the affected surface).
+- **Precedence preserved**: bans → gate → MCP gate → structure → memory-mandate →
+  counters, with the group's CONFIG-ERROR deny firing at that guard's own position.
+- **Empty `skills.mandatory` / `skills.orchestrator`** = valid + startup warning
+  (honored — see table). **Unknown keys anywhere** = warn (problem recorded) + ignore.
+  **Unwired groups** (`structure`/`paths` → Phase 2, `messages`/`primer` → Phase 3) =
+  warn + ignored entirely. **`null` caps** = guard off (valid, no warning).
+- **A present-but-non-object `options` value** cannot name a group ⇒ every enforcement
+  guard fails closed (one problem clause, effective caps 1).
+- **Problem surfacing**: every problem (error or warning) is pushed as an additional
+  system text part `dispatch-policy config problems: <problems joined by "; ">` AFTER
+  the PRIMER part in `session.context`. The PRIMER part itself is byte-identical to
+  `DEFAULTS.primer.text`; with zero problems nothing extra is pushed.
+
+### 6.4 Minimal config example (Phase-1 keys)
+
+```jsonc
+// ~/.config/opencode/opencode.jsonc (global config; apply = opencode service restart)
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "/home/alina/.local/share/opencode-mandator/plugin-package",
+      "options": {
+        "dispatch": {
+          "tools": ["subagent"],
+          "forbiddenAgents": ["general"], // universal hygiene — kept
+          "requireBackground": true,
+          "requireAgent": true
+        },
+        "skills": {
+          "mandatory": [], // no superpowers skills in this install → base gate inert for skills (warned)
+          "orchestrator": []
+        },
+        "gates": {
+          "tools": ["edit", "write", "shell", "subagent", "webfetch"],
+          "exaSubstring": null // no exa MCP here
+        },
+        "caps": { "identicalMax": 8, "chainMax": 12, "chainOverrideMarker": "[override]" }
+      }
+    }
+  ]
+}
+```
+
+Omitting `options` entirely reproduces current behavior exactly (file-discovery
+installs and the baseline suite exercise exactly that path).
