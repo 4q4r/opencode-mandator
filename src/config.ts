@@ -1,24 +1,34 @@
-// src/config.ts — Flexibility Phase 1: the options resolver for the dispatch-policy
-// plugin (task-phase1-brief.md; design flex-design-report.md §C/§D, owner rulings
-// 2026-11-07 — do not re-litigate).
+// src/config.ts — Flexibility Phase 1+2: the options resolver for the dispatch-policy
+// plugin (task-phase1-brief.md + task-phase2-brief.md; design flex-design-report.md
+// §A/§C/§D, owner rulings 2026-11-07 — do not re-litigate).
 //
 // `resolveOptions(raw)` validates + merges the raw `ctx.options` object (untyped flat
 // JSON per the OpenCode plugin SDK — the plugin owns 100% of validation) over DEFAULTS.
-// Phase 1 wires exactly the 11 enforcement knobs enumerated in the brief:
-//   dispatch.tools / dispatch.forbiddenAgents / dispatch.requireBackground /
-//   dispatch.requireAgent / skills.mandatory / skills.orchestrator / gates.tools /
-//   gates.exaSubstring / caps.identicalMax / caps.chainMax / caps.chainOverrideMarker
-// (the brief's "16" count enumerates these 11; the remaining taxonomy groups are
-// Phase-2/3 per the explicit non-goals and are warn+ignored if present).
+// Phase 1 wired 11 enforcement knobs (dispatch.*, skills.*, gates.tools/exaSubstring,
+// caps.*); Phase 2 wires the remaining enforcement-surface options (+10; 26 total):
+//   gates.mcpRequirements / gates.readTargets / gates.memoryMandatePattern /
+//   structure.blocks / structure.subagentProfile / structure.stitchProfile /
+//   structure.stitchPromptTools / structure.stitchMinPrompt / paths.memoryIndex /
+//   paths.memoryTree
+// (messages/primer remain Phase 3 per the explicit non-goals and are warn+ignored).
 //
 // Owner-approved HYBRID failure semantics (§C(c)):
-//   - Enforcement groups (dispatch, skills, gates, caps): an invalid option fails THAT
-//     guard closed — the guard denies affected calls with a CONFIG-ERROR deny naming the
-//     option path. Never silent fallback, never silent disable.
+//   - Enforcement groups (dispatch, skills, gates, structure, caps, paths): an invalid
+//     option fails THAT guard closed — the guard denies affected calls with a
+//     CONFIG-ERROR deny naming the option path. Never silent fallback, never silent
+//     disable. Sub-guard granularity (Phase 2): gates.memoryMandatePattern errors live
+//     in `memoryMandateProblems` (only the ext-6.1 fresh-dispatch check fails closed —
+//     the base skill/memory gate stays healthy); structure.stitch* errors live in
+//     `stitchProblems` (only the Stitch surface fails closed — fresh dispatches keep
+//     their own structure guard). The check cannot run ⇒ nothing passes unvalidated.
+//   - structure.subagentProfile / structure.stitchProfile are CROSS-VALIDATED against
+//     the keys of structure.blocks: an unknown block key is a validation failure
+//     (CONFIG-ERROR naming the profile path).
 //   - Invalid cap ⇒ EFFECTIVE CAP 1 + CONFIG-ERROR deny (never "guard off").
 //   - Empty skills.mandatory / skills.orchestrator ⇒ valid + startup warning (owner
-//     ruling 2), honored; the MEMORY.md read requirement is a separate (Phase-2 readTargets)
-//     concern and stays.
+//     ruling 2). Empty structure profiles / stitchPromptTools / mcpRequirements are
+//     valid + inert per §C (empty lists ruling); an empty gates.readTargets is valid +
+//     warned (the read prerequisite becomes inert — same vacuous-gate precedent).
 //   - Unknown keys anywhere ⇒ warn (problem recorded) + ignore (owner ruling 4).
 //   - Cap disable representation: `null` means the guard is off (owner ruling 3).
 //   - A raw options value that is present but not a plain object cannot name a group, so
@@ -27,10 +37,13 @@
 // Every problem is a plain human-readable string. The union of all problems (errors and
 // warnings) is surfaced by the plugin as a system text part AFTER the PRIMER part
 // (session.context); the per-guard error subsets live on the resolved config and drive
-// the CONFIG-ERROR denies. Hand-rolled validation — zero new dependencies (owner rule).
+// the CONFIG-ERROR denies. Regex options are stored as SOURCE strings and validated by
+// compilation at resolve time (design §C: compile once at setup, never per call — the
+// plugin compiles the validated sources). Hand-rolled validation — zero new
+// dependencies (owner rule).
 //
 // With NO raw options (ctx.options absent — the file-discovery install and the whole
-// existing 80-test suite) the resolver returns pure DEFAULTS values and zero problems.
+// existing test suite) the resolver returns pure DEFAULTS values and zero problems.
 
 import { DEFAULTS, deepFreeze } from "./defaults.ts"
 
@@ -53,7 +66,25 @@ export type ResolvedConfig = {
   gates: {
     tools: string[]
     exaSubstring: string | null
-    problems: string[]
+    mcpRequirements: { prefix: string; skill: string }[]
+    readTargets: { key: string; suffix: string }[]
+    memoryMandatePattern: string // regex SOURCE (validated by compilation with flags "iu")
+    problems: string[] // tools/exaSubstring/mcpRequirements/readTargets errors — the skill/memory gate fails closed
+    memoryMandateProblems: string[] // gates.memoryMandatePattern errors — the ext-6.1 fresh-dispatch check fails closed
+  }
+  structure: {
+    blocks: Record<string, { name: string; pattern: string }>
+    subagentProfile: string[]
+    stitchProfile: string[]
+    stitchPromptTools: string[]
+    stitchMinPrompt: number
+    problems: string[] // blocks/profile cross-validation errors — the structure check fails closed (fresh + stitch)
+    stitchProblems: string[] // stitchPromptTools/stitchMinPrompt errors — only the Stitch surface fails closed
+  }
+  paths: {
+    memoryIndex: string
+    memoryTree: string
+    problems: string[] // paths errors — the ext-6.6 memory-overwrite guard fails closed
   }
   caps: {
     identicalMax: number | null
@@ -67,12 +98,10 @@ export type ResolvedConfig = {
 
 export type ResolveResult = { resolved: ResolvedConfig; problems: string[] }
 
-// Groups recognized by the taxonomy (DEFAULTS). structure/paths/messages/primer exist in
-// DEFAULTS but are NOT wired in Phase 1 — if present they warn + are ignored entirely.
+// Groups recognized by the taxonomy (DEFAULTS). messages/primer exist in DEFAULTS but
+// are NOT wired until Phase 3 — if present they warn + are ignored entirely.
 const KNOWN_GROUPS = ["dispatch", "skills", "gates", "caps", "structure", "paths", "messages", "primer"]
 const UNWIRED_PHASE: Record<string, string> = {
-  structure: "Phase 2",
-  paths: "Phase 2",
   messages: "Phase 3",
   primer: "Phase 3",
 }
@@ -80,8 +109,10 @@ const UNWIRED_PHASE: Record<string, string> = {
 const GROUP_KEYS: Record<string, string[]> = {
   dispatch: ["tools", "forbiddenAgents", "requireBackground", "requireAgent"],
   skills: ["mandatory", "orchestrator"],
-  gates: ["tools", "exaSubstring"],
+  gates: ["tools", "exaSubstring", "mcpRequirements", "readTargets", "memoryMandatePattern"],
   caps: ["identicalMax", "chainMax", "chainOverrideMarker"],
+  structure: ["blocks", "subagentProfile", "stitchProfile", "stitchPromptTools", "stitchMinPrompt"],
+  paths: ["memoryIndex", "memoryTree"],
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -185,6 +216,184 @@ function exaSubstringOption(
   if (v === null) return null
   if (typeof v === "string" && v.length > 0) return v
   problems.push(`${path} must be a non-empty string or null (got ${fmtGot(v)}); ${consequence}`)
+  return fallback
+}
+
+// gates.mcpRequirements (design §A #9): array of {prefix, skill} objects with non-empty
+// strings; [] is valid (the MCP→skill gate is inert). Invalid ⇒ the gates guard fails
+// closed (the gated set is jointly defined by tools + exaSubstring + MCP prefixes).
+function mcpRequirementsOption(
+  raw: Record<string, unknown>,
+  path: string,
+  problems: string[],
+  fallback: readonly { prefix: string; skill: string }[],
+  consequence: string,
+): { prefix: string; skill: string }[] {
+  const v = raw[keyOf(path)]
+  if (v === undefined) return fallback.map((e) => ({ ...e }))
+  const ok =
+    Array.isArray(v) &&
+    v.every(
+      (e) =>
+        isPlainObject(e) &&
+        typeof e.prefix === "string" &&
+        e.prefix.length > 0 &&
+        typeof e.skill === "string" &&
+        e.skill.length > 0,
+    )
+  if (!ok) {
+    problems.push(
+      `${path} must be an array of {prefix, skill} objects with non-empty strings (got ${fmtGot(v)}); ${consequence}`,
+    )
+    return fallback.map((e) => ({ ...e }))
+  }
+  return (v as { prefix: string; skill: string }[]).map((e) => ({ prefix: e.prefix, skill: e.skill }))
+}
+
+// gates.readTargets (design §A #10): array of {key, suffix} objects with non-empty
+// strings; [] is valid + warned by the caller (the read prerequisite is inert).
+function readTargetsOption(
+  raw: Record<string, unknown>,
+  path: string,
+  problems: string[],
+  fallback: readonly { key: string; suffix: string }[],
+  consequence: string,
+): { key: string; suffix: string }[] {
+  const v = raw[keyOf(path)]
+  if (v === undefined) return fallback.map((e) => ({ ...e }))
+  const ok =
+    Array.isArray(v) &&
+    v.every(
+      (e) =>
+        isPlainObject(e) &&
+        typeof e.key === "string" &&
+        e.key.length > 0 &&
+        typeof e.suffix === "string" &&
+        e.suffix.length > 0,
+    )
+  if (!ok) {
+    problems.push(
+      `${path} must be an array of {key, suffix} objects with non-empty strings (got ${fmtGot(v)}); ${consequence}`,
+    )
+    return fallback.map((e) => ({ ...e }))
+  }
+  return (v as { key: string; suffix: string }[]).map((e) => ({ key: e.key, suffix: e.suffix }))
+}
+
+// Regex-source option (design §A: regex options are pattern SOURCE strings compiled
+// with the original flags): must be a non-empty string that compiles; stored as source,
+// validated by compilation at resolve time. Invalid ⇒ the sub-guard fails closed.
+function regexSourceOption(
+  raw: Record<string, unknown>,
+  path: string,
+  problems: string[],
+  fallback: string,
+  flags: string,
+  consequence: string,
+): string {
+  const v = raw[keyOf(path)]
+  if (v === undefined) return fallback
+  if (typeof v !== "string" || v.length === 0) {
+    problems.push(`${path} must be a non-empty regex source string (got ${fmtGot(v)}); ${consequence}`)
+    return fallback
+  }
+  try {
+    new RegExp(v, flags)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    problems.push(`${path} must be a valid regex source (got ${fmtGot(v)}: ${msg}); ${consequence}`)
+    return fallback
+  }
+  return v
+}
+
+// structure.blocks (design §A #12): a plain-object record of {name, pattern}; every
+// pattern must compile with the original flag "i". Invalid entry ⇒ a problem naming
+// structure.blocks.<key> (or .pattern) and the whole option falls back to defaults —
+// the structure guard is marked broken either way (the check cannot run ⇒ nothing
+// passes unvalidated).
+function blocksOption(
+  raw: Record<string, unknown>,
+  problems: string[],
+  fallback: Record<string, { name: string; pattern: string }>,
+): Record<string, { name: string; pattern: string }> {
+  const copy = (src: Record<string, { name: string; pattern: string }>) =>
+    Object.fromEntries(Object.keys(src).map((k) => [k, { ...src[k] }]))
+  const v = raw.blocks
+  if (v === undefined) return copy(fallback)
+  if (!isPlainObject(v)) {
+    problems.push(
+      `structure.blocks must be a plain object record of {name, pattern} (got ${fmtGot(v)}); structure guard failing closed`,
+    )
+    return copy(fallback)
+  }
+  const out: Record<string, { name: string; pattern: string }> = {}
+  let ok = true
+  for (const key of Object.keys(v)) {
+    const entry = v[key]
+    if (
+      !isPlainObject(entry) ||
+      typeof entry.name !== "string" ||
+      entry.name.length === 0 ||
+      typeof entry.pattern !== "string" ||
+      entry.pattern.length === 0
+    ) {
+      problems.push(
+        `structure.blocks.${key} must be an object with non-empty string "name" and "pattern" (got ${fmtGot(entry)}); structure guard failing closed`,
+      )
+      ok = false
+      continue
+    }
+    try {
+      new RegExp(entry.pattern, "i")
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      problems.push(
+        `structure.blocks.${key}.pattern must be a valid regex source (got ${fmtGot(entry.pattern)}: ${msg}); structure guard failing closed`,
+      )
+      ok = false
+      continue
+    }
+    out[key] = { name: entry.name, pattern: entry.pattern }
+  }
+  return ok ? out : copy(fallback)
+}
+
+// Profile cross-validation (brief: "referencing an unknown block key ⇒ CONFIG-ERROR"):
+// every profile key must exist in the block-key universe (the raw override's keys when
+// a valid record, else the DEFAULT block keys). Returns the validated profile — the
+// DEFAULT profile when the shape or any key is invalid (the guard is marked broken).
+function profileOption(
+  profile: string[],
+  fallback: readonly string[],
+  universe: string[] | null,
+  path: string,
+  problems: string[],
+): string[] {
+  if (universe === null) return profile // blocks itself broken — the guard already fails closed
+  const unknown = profile.filter((key) => !universe.includes(key))
+  if (unknown.length === 0) return profile
+  for (const key of unknown) {
+    problems.push(
+      `${path} references unknown block key "${key}" (known blocks: ${universe.join(", ")}); structure guard failing closed`,
+    )
+  }
+  return [...fallback]
+}
+
+// structure.stitchMinPrompt (design §A #16): a positive integer floor; anything else
+// breaks the Stitch surface sub-guard (fresh dispatches unaffected).
+function positiveIntOption(
+  raw: Record<string, unknown>,
+  path: string,
+  problems: string[],
+  fallback: number,
+  consequence: string,
+): number {
+  const v = raw[keyOf(path)]
+  if (v === undefined) return fallback
+  if (typeof v === "number" && Number.isInteger(v) && v >= 1) return v
+  problems.push(`${path} must be a positive integer (got ${fmtGot(v)}); ${consequence}`)
   return fallback
 }
 
@@ -294,6 +503,7 @@ export function resolveOptions(raw: unknown): ResolveResult {
 
   // --- gates group ---
   const gatesProblems: string[] = []
+  const gatesMemoryMandateProblems: string[] = [] // ext-6.1 sub-guard pool (separate from the gate)
   const gatesRaw = o.gates
   const gatesOK = !("gates" in o) || isPlainObject(gatesRaw)
   if ("gates" in o && !gatesOK) {
@@ -303,6 +513,18 @@ export function resolveOptions(raw: unknown): ResolveResult {
   }
   const g = gatesOK && isPlainObject(gatesRaw) ? gatesRaw : {}
   if (gatesOK && "gates" in o) scanUnknownKeys("gates", g, problems)
+  const readTargets = readTargetsOption(
+    g,
+    "gates.readTargets",
+    gatesProblems,
+    DEFAULTS.gates.readTargets,
+    "skill gate failing closed",
+  )
+  // Empty readTargets ⇒ valid + startup warning (the read prerequisite is inert — the
+  // vacuous-gate precedent of the empty-skills ruling; never silently weaker).
+  if (readTargets.length === 0) {
+    problems.push("gates.readTargets is empty — the read prerequisite is inert (warning)")
+  }
   const gates: ResolvedConfig["gates"] = {
     tools: stringArrayOption(g, "gates.tools", gatesProblems, DEFAULTS.gates.tools, "skill gate failing closed"),
     exaSubstring: exaSubstringOption(
@@ -312,7 +534,123 @@ export function resolveOptions(raw: unknown): ResolveResult {
       DEFAULTS.gates.exaSubstring,
       "skill gate failing closed",
     ),
+    mcpRequirements: mcpRequirementsOption(
+      g,
+      "gates.mcpRequirements",
+      gatesProblems,
+      DEFAULTS.gates.mcpRequirements,
+      "skill gate failing closed",
+    ),
+    readTargets,
+    memoryMandatePattern: regexSourceOption(
+      g,
+      "gates.memoryMandatePattern",
+      gatesMemoryMandateProblems,
+      DEFAULTS.gates.memoryMandatePattern,
+      "iu",
+      "memory-mandate check failing closed",
+    ),
     problems: gatesProblems,
+    memoryMandateProblems: gatesMemoryMandateProblems,
+  }
+
+  // --- structure group (Phase 2) ---
+  const structureProblems: string[] = []
+  const stitchProblems: string[] = []
+  const structureRaw = o.structure
+  const structureOK = !("structure" in o) || isPlainObject(structureRaw)
+  if ("structure" in o && !structureOK) {
+    structureProblems.push(
+      `options group "structure" must be a plain object (got ${fmtGot(structureRaw)}); structure guard failing closed`,
+    )
+  }
+  const st = structureOK && isPlainObject(structureRaw) ? structureRaw : {}
+  if (structureOK && "structure" in o) scanUnknownKeys("structure", st, problems)
+  const blocks = blocksOption(st, structureProblems, DEFAULTS.structure.blocks)
+  // Cross-validation universe: the raw override's keys when a valid record, the DEFAULT
+  // keys when no override, and null when the override itself is broken (the guard is
+  // already failing closed — no second verdict on unreadable data).
+  const blockKeyUniverse =
+    st.blocks === undefined
+      ? Object.keys(DEFAULTS.structure.blocks)
+      : isPlainObject(st.blocks)
+        ? Object.keys(st.blocks)
+        : null
+  const subagentProfile = profileOption(
+    stringArrayOption(
+      st,
+      "structure.subagentProfile",
+      structureProblems,
+      DEFAULTS.structure.subagentProfile,
+      "structure guard failing closed",
+    ),
+    DEFAULTS.structure.subagentProfile,
+    blockKeyUniverse,
+    "structure.subagentProfile",
+    structureProblems,
+  )
+  const stitchProfile = profileOption(
+    stringArrayOption(
+      st,
+      "structure.stitchProfile",
+      structureProblems,
+      DEFAULTS.structure.stitchProfile,
+      "structure guard failing closed",
+    ),
+    DEFAULTS.structure.stitchProfile,
+    blockKeyUniverse,
+    "structure.stitchProfile",
+    structureProblems,
+  )
+  const structure: ResolvedConfig["structure"] = {
+    blocks,
+    subagentProfile,
+    stitchProfile,
+    stitchPromptTools: stringArrayOption(
+      st,
+      "structure.stitchPromptTools",
+      stitchProblems,
+      DEFAULTS.structure.stitchPromptTools,
+      "stitch structure check failing closed",
+    ),
+    stitchMinPrompt: positiveIntOption(
+      st,
+      "structure.stitchMinPrompt",
+      stitchProblems,
+      DEFAULTS.structure.stitchMinPrompt,
+      "stitch structure check failing closed",
+    ),
+    problems: structureProblems,
+    stitchProblems,
+  }
+
+  // --- paths group (Phase 2) ---
+  const pathsProblems: string[] = []
+  const pathsRaw = o.paths
+  const pathsOK = !("paths" in o) || isPlainObject(pathsRaw)
+  if ("paths" in o && !pathsOK) {
+    pathsProblems.push(
+      `options group "paths" must be a plain object (got ${fmtGot(pathsRaw)}); memory-overwrite guard failing closed`,
+    )
+  }
+  const p = pathsOK && isPlainObject(pathsRaw) ? pathsRaw : {}
+  if (pathsOK && "paths" in o) scanUnknownKeys("paths", p, problems)
+  const paths: ResolvedConfig["paths"] = {
+    memoryIndex: nonEmptyStringOption(
+      p,
+      "paths.memoryIndex",
+      pathsProblems,
+      DEFAULTS.paths.memoryIndex,
+      "memory-overwrite guard failing closed",
+    ),
+    memoryTree: nonEmptyStringOption(
+      p,
+      "paths.memoryTree",
+      pathsProblems,
+      DEFAULTS.paths.memoryTree,
+      "memory-overwrite guard failing closed",
+    ),
+    problems: pathsProblems,
   }
 
   // --- caps group ---
@@ -356,11 +694,15 @@ export function resolveOptions(raw: unknown): ResolveResult {
     dispatch.problems.push(...totalBreak)
     skills.problems.push(...totalBreak)
     gates.problems.push(...totalBreak)
+    gates.memoryMandateProblems.push(...totalBreak)
+    structure.problems.push(...totalBreak)
+    structure.stitchProblems.push(...totalBreak)
+    paths.problems.push(...totalBreak)
     caps.identicalProblems.push(...totalBreak)
     caps.chainMaxProblems.push(...totalBreak)
     caps.identicalMax = 1
     caps.chainMax = 1
   }
 
-  return { resolved: deepFreeze({ dispatch, skills, gates, caps }), problems }
+  return { resolved: deepFreeze({ dispatch, skills, gates, structure, paths, caps }), problems }
 }

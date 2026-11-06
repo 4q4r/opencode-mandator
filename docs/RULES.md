@@ -215,17 +215,17 @@ workflow reads.
 - **Atomic install only**: never multi-edit the live file (interim states get
   hot-reloaded). `install.sh` enforces single `mv` installs by construction.
 
-## 6. Configuration (Flexibility Phase 1)
+## 6. Configuration (Flexibility Phase 1+2)
 
 The plugin reads `options` from the **object form** of the `plugins` array entry in
 `opencode.json` (string entries and file-discovered plugins carry no options).
 `ctx.options` is an untyped flat JSON record — this plugin owns 100% of validation,
-defaults, and error handling (`src/config.ts` → `resolveOptions`). Phase 1 wires the
-**11 enforcement knobs** below; the remaining taxonomy groups (`structure`, `paths`,
-`messages`, `primer`) exist in `src/defaults.ts` and are wired in Phase 2/3 — if
-present in `options` today they are **warned + ignored**. With NO options the resolved
-config is byte-identical to the pre-Phase-1 hardcodes (the baseline test suite is the
-parity contract).
+defaults, and error handling (`src/config.ts` → `resolveOptions`). Phase 1 wired the
+**11 enforcement knobs** and Phase 2 the remaining **enforcement-surface options**
+(+10; **26 total**, table below); the `messages`/`primer` groups exist in
+`src/defaults.ts` and are wired in Phase 3 — if present in `options` today they are
+**warned + ignored**. With NO options the resolved config is byte-identical to the
+pre-migration hardcodes (the baseline test suite is the parity contract).
 
 ### 6.1 Loading modes, precedence, restart rule
 
@@ -253,7 +253,7 @@ parity contract).
   untouched), prints the ready-to-paste global-config snippet with the double-load
   warning, and points at `scripts/probe-options.sh` for the end-to-end options probe.
 
-### 6.2 Option table (Phase 1 — 11 knobs)
+### 6.2 Option table (Phase 1+2 — 26 options)
 
 | :-- | Option | Type | Default (= today) | Effect when overridden |
 | :-- | :-- | :-- | :-- | :-- |
@@ -261,32 +261,62 @@ parity contract).
 | 2 | `dispatch.forbiddenAgents` | `string[]` | `["general"]` | The agent ban list — a dispatch is denied when `agent` matches ANY entry; `[]` = no agent ban |
 | 3 | `dispatch.requireBackground` | `boolean` | `true` | `false` stops denying `background !== true` |
 | 4 | `dispatch.requireAgent` | `boolean` | `true` | `false` disables the agent-missing deny (the general ban is independent) |
-| 5 | `skills.mandatory` | `string[]` | 4 skills (brainstorming, grilling, build-with-exa, context7-mcp) | The base gate's required skill list; `[]` = valid + startup warning, base gate inert **for skills** (the MEMORY.md read still applies — it is a `readTargets` concern, Phase 2) |
-| 6 | `skills.orchestrator` | `string[]` | 3 skills (subagent-driven-development, dispatching-parallel-agents, prompt-engineering-patterns) | Extra skills required on the dispatch path only; `[]` = valid + startup warning, orchestrator skills waived (the workflow reads stay — same Phase-2 note) |
-| 7 | `gates.tools` | `string[]` | 9 names (edit, write, shell, bash, apply_patch, subagent, webfetch, websearch, execute) | The exact-match gated set (authoritative); `[]` removes exact-match entries — the exa substring rule and MCP skill-requirement prefixes still gate (Phase 2 knobs) |
+| 5 | `skills.mandatory` | `string[]` | 4 skills (brainstorming, grilling, build-with-exa, context7-mcp) | The base gate's required skill list; `[]` = valid + startup warning, base gate inert **for skills** (the read prerequisite is a `readTargets` concern, row 12) |
+| 6 | `skills.orchestrator` | `string[]` | 3 skills (subagent-driven-development, dispatching-parallel-agents, prompt-engineering-patterns) | Extra skills required on the dispatch path only; `[]` = valid + startup warning, orchestrator skills waived (the non-memory reads stay — same row-12 note) |
+| 7 | `gates.tools` | `string[]` | 9 names (edit, write, shell, bash, apply_patch, subagent, webfetch, websearch, execute) | The exact-match gated set (authoritative); `[]` removes exact-match entries — the exa substring rule and MCP skill-requirement prefixes still gate (rows 8, 9) |
 | 8 | `gates.exaSubstring` | `string \| null` | `"exa"` | Generalizes `tool.includes(<value>)`; `null` removes the substring rule (explicit MCP prefixes only) |
-| 9 | `caps.identicalMax` | `number ≥ 1 \| null` | `4` | Identical-dispatch breaker threshold (increment-then-check, per-session, fresh-only); `null` = breaker off |
-| 10 | `caps.chainMax` | `number ≥ 1 \| null` | `6` | Continuation-chain cap per (parent, child); counter semantics unchanged; `null` = cap off |
-| 11 | `caps.chainOverrideMarker` | `string` (non-empty) | `"[chain-cap-override]"` | The Variant-A escape token (marker + non-empty reason); compiled to `escape(marker) + \s*\S/i` per setup |
+| 9 | `gates.mcpRequirements` | `Array<{prefix, skill}>` | 2 entries (`context7`→context7-mcp, `adb_mcp`→adb-mcp) | The ext-7.1 MCP→skill prefix table; every prefix also extends the gated set; `[]` = valid, the MCP→skill gate is inert. Per-skill usage hints stay keyed by skillId (`messages.mcpSkillHints`) — an unknown skill gets the generic hint |
+| 10 | `gates.readTargets` | `Array<{key, suffix}>` | 3 entries (memory → `.config/opencode/MEMORY.md`; workflow → `…/topics/workflow.md`; workflow-git-pr → `…/topics/workflow-git-pr.md`) | Which `read` calls count as compliance (suffix match after `~`-expansion, absolute and `~/` forms both kept) and what the gates demand: the **`memory` key** is the base-gate read, every **other key** is demanded on the dispatch path; `[]` = valid + startup warning, the read prerequisite is inert |
+| 11 | `gates.memoryMandatePattern` | `string` (regex source, flags `iu`) | `"(MEMORY\\.md\|memory/(topics\|projects)\|глобальн\\p{L}*\\s+пам(ять\|яти)\|global memory)"` | The ext-6.1 fresh-brief keyword check (compiled at setup, never per call); an ASCII-only install swaps in a Cyrillic-free pattern. An invalid/uncompilable source fails **only the memory-mandate check** closed (its own CONFIG-ERROR) |
+| 12 | `structure.blocks` | `Record<key, {name, pattern}>` | The five `BLOCKS` entries verbatim (keys `role`/`task`/`context`/`constraints`/`output`, names `Role`…`Output format`, current regex sources incl. RU alternatives) | The block vocabulary + matchers (pattern = regex source, compiled with flag `i`); the record is **replaced wholesale**, not merged. An invalid regex source or entry shape fails the structure guard closed with a CONFIG-ERROR naming `structure.blocks.<key>[.pattern]` |
+| 13 | `structure.subagentProfile` | `key[]` (order = deny-message order) | `["role","task","context","constraints","output"]` | The fresh-dispatch block profile; `[]` = valid, fresh dispatches un-checked. **Cross-validated**: a key not present in `structure.blocks` ⇒ structure guard fails closed, CONFIG-ERROR naming `structure.subagentProfile` |
+| 14 | `structure.stitchProfile` | `key[]` | `["task","context","constraints","output"]` | The MCP (Stitch) profile — no Role. Same cross-validation rule against `structure.blocks` (names `structure.stitchProfile`) |
+| 15 | `structure.stitchPromptTools` | `string[]` | 3 Stitch free-text prompt tools | Which MCP tools get the profile check; `[]` = valid, the surface is disabled |
+| 16 | `structure.stitchMinPrompt` | `number ≥ 1` | `120` | Below this length the stitch check never fires (tactical follow-ups flow); a huge value ⇒ surface off. Invalid ⇒ only the Stitch surface fails closed |
+| 17 | `caps.identicalMax` | `number ≥ 1 \| null` | `4` | Identical-dispatch breaker threshold (increment-then-check, per-session, fresh-only); `null` = breaker off |
+| 18 | `caps.chainMax` | `number ≥ 1 \| null` | `6` | Continuation-chain cap per (parent, child); counter semantics unchanged; `null` = cap off |
+| 19 | `caps.chainOverrideMarker` | `string` (non-empty) | `"[chain-cap-override]"` | The Variant-A escape token (marker + non-empty reason); compiled to `escape(marker) + \s*\S/i` per setup |
+| 20 | `paths.memoryIndex` | `string` (path, `~` ok) | `"~/.config/opencode/MEMORY.md"` | The root index file protected by the ext-6.6 overwrite guard (resolve + exact-match rule preserved) |
+| 21 | `paths.memoryTree` | `string` (dir, `~` ok) | `"~/.config/opencode/memory"` | The protected tree (home-anchored containment; dot-segment bypass still impossible — resolution before classification) |
+
+Rows 22+ (`messages.*`, `primer.*`) are Phase 3 — warned + ignored today.
 
 ### 6.3 Validation and failure semantics (owner rulings 2026-11-07 — hybrid)
 
-- **Enforcement groups fail closed per guard** (`dispatch`, `skills`, `gates`, `caps`):
-  an invalid option in a group makes THAT guard deny affected calls with a
-  `CONFIG-ERROR` deny naming the option path, e.g.
+- **Enforcement groups fail closed per guard** (`dispatch`, `skills`, `gates`,
+  `structure`, `caps`, `paths`): an invalid option in a group makes THAT guard deny
+  affected calls with a `CONFIG-ERROR` deny naming the option path, e.g.
   `DENIED by dispatch-policy plugin: [config-error] caps.chainMax must be a positive integer or null (got "abc"); guard running with effective cap 1. Fix the plugin options in opencode.json, run \`opencode service restart\`, then re-run this exact call.` + the shared COMPLIANCE WARNING trailer. Other guards are unaffected.
+- **Sub-guard granularity (Phase 2)**: `gates.memoryMandatePattern` errors live in
+  their own pool — an invalid regex fails **only the ext-6.1 fresh-dispatch
+  memory-mandate check** closed (CONFIG-ERROR at the check's own position, after the
+  structure check); the base skill/memory gate stays healthy.
+  `structure.stitchPromptTools` / `structure.stitchMinPrompt` errors fail **only the
+  Stitch surface** closed; `structure.blocks` / profile errors fail the structure
+  check on **both** surfaces (fresh dispatches + Stitch).
+- **Cross-validation**: `structure.subagentProfile` / `structure.stitchProfile` keys
+  must exist in `structure.blocks` — a reference to an unknown block key is a
+  validation failure (CONFIG-ERROR naming the profile path).
 - **Invalid cap ⇒ effective cap 1 + CONFIG-ERROR deny** — never "guard off". An invalid
   `caps.chainOverrideMarker` fails the chain guard closed for over-cap continuations
   (the one-shot escape cannot be evaluated); under-cap continuations pass normally.
 - **Broken-group scoping**: a broken `dispatch`/`gates` group still scopes its
   CONFIG-ERROR denies at the calls the DEFAULT config would have covered (the broken
-  values are never used to widen or narrow the affected surface).
+  values are never used to widen or narrow the affected surface). Same for a broken
+  `structure`/`paths` group (Stitch CONFIG-ERRORs hit the default Stitch tools; the
+  broken ext-6.6 guard hits writes the default memory topology would have covered).
 - **Precedence preserved**: bans → gate → MCP gate → structure → memory-mandate →
-  counters, with the group's CONFIG-ERROR deny firing at that guard's own position.
-- **Empty `skills.mandatory` / `skills.orchestrator`** = valid + startup warning
-  (honored — see table). **Unknown keys anywhere** = warn (problem recorded) + ignore.
-  **Unwired groups** (`structure`/`paths` → Phase 2, `messages`/`primer` → Phase 3) =
-  warn + ignored entirely. **`null` caps** = guard off (valid, no warning).
+  counters, with the group's CONFIG-ERROR deny firing at that guard's own position
+  (e.g. a zero-state fresh dispatch still receives the normal gate deny, not the
+  structure CONFIG-ERROR; a malformed brief receives the structure deny before the
+  memory-mandate CONFIG-ERROR).
+- **Empty lists**: `skills.mandatory` / `skills.orchestrator` = valid + startup warning
+  (honored — see table). `structure.subagentProfile` / `structure.stitchProfile` /
+  `structure.stitchPromptTools` / `gates.mcpRequirements` = valid + inert (§C empty
+  lists ruling). `gates.readTargets` = `[]` valid + startup warning (the read
+  prerequisite becomes inert — the vacuous-gate precedent). **Unknown keys anywhere** =
+  warn (problem recorded) + ignore. **Unwired groups** (`messages`/`primer` → Phase 3)
+  = warn + ignored entirely. **`null` caps** = guard off (valid, no warning).
 - **A present-but-non-object `options` value** cannot name a group ⇒ every enforcement
   guard fails closed (one problem clause, effective caps 1).
 - **Problem surfacing**: every problem (error or warning) is pushed as an additional
@@ -294,7 +324,7 @@ parity contract).
   the PRIMER part in `session.context`. The PRIMER part itself is byte-identical to
   `DEFAULTS.primer.text`; with zero problems nothing extra is pushed.
 
-### 6.4 Minimal config example (Phase-1 keys)
+### 6.4 Minimal config example (Phase-1/2 keys)
 
 ```jsonc
 // ~/.config/opencode/opencode.jsonc (global config; apply = opencode service restart)
