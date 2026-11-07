@@ -135,6 +135,7 @@ enforcement options are untouched.
 ```
 
 The same shape covers `mode: "default"` (explicitly pin the 13-bullet PRIMER verbatim,
-ignoring any `primer.text`) and `mode: "replace"` (inject exactly `primer.text` —
-`replace` is also the effective default mode, so setting `primer.text` alone replaces
-the primer).
+ignoring any `primer.text`) and `mode: "replace"` (inject exactly `primer.text`).
+`default` is the effective default mode: setting `primer.text` alone does NOT change the
+injected primer — an explicit `mode: "replace"` / `"append"` is required (fix-round-1
+ruling, PR #12).

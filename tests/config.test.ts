@@ -1090,13 +1090,15 @@ describe("config Phase 2 — invalid options fail closed per guard (CONFIG-ERROR
 // stays trailer-less REGARDLESS of configuration — the no-trailer rule is
 // enforced in code, never by template content.
 //
-// Primer modes (owner ruling 5, as amended by the phase-3 brief):
-//   "default" → DEFAULTS.primer.text verbatim (primer.text ignored)
-//   "replace" → primer.text verbatim (DEFAULTS ignored; the effective default
-//               mode, so a bare primer.text override works standalone)
+// Primer modes (owner ruling 5, as amended by the fix-round-1 controller ruling —
+// PR #12: the frozen default mode is "default"):
+//   "default" → DEFAULTS.primer.text verbatim (primer.text ignored) — the
+//               EFFECTIVE default mode: a bare primer.text is INERT until the
+//               owner sets replace/append explicitly
+//   "replace" → primer.text verbatim (DEFAULTS ignored)
 //   "append"  → DEFAULTS.primer.text + "\n\n" + primer.text
 //   invalid mode or missing/invalid text in replace/append ⇒ default primer +
-//   problem. No-options resolution stays byte-identical (mode "replace" +
+//   problem. No-options resolution stays byte-identical (mode "default" +
 //   DEFAULTS.primer.text verbatim).
 // ============================================================================
 
@@ -1217,16 +1219,23 @@ describe("config Phase 3 — resolveOptions: messages/primer resolution semantic
     expect(resolved.primer.text).toBe(DEFAULTS.primer.text)
   })
 
-  test("primer.mode 'replace'/'append' apply text; a bare primer.text override works (effective default mode 'replace')", () => {
+  test("primer.mode 'replace' → configured primer.text verbatim (DEFAULTS ignored)", () => {
     const a = resolveOptions({ primer: { mode: "replace", text: "MY RULES" } })
     expect(a.problems).toEqual([])
     expect(a.resolved.primer.text).toBe("MY RULES")
+  })
+
+  test("primer.mode 'append' → DEFAULTS.primer.text + configured text", () => {
     const b = resolveOptions({ primer: { mode: "append", text: "ADDENDUM" } })
     expect(b.problems).toEqual([])
     expect(b.resolved.primer.text).toBe(DEFAULTS.primer.text + "\n\nADDENDUM")
-    const c = resolveOptions({ primer: { text: "TEXT ONLY" } }) // no mode → effective default "replace"
+  })
+
+  test("primer.text WITHOUT mode → primer UNCHANGED (fix-round-1 ruling: a configured text alone must not change the injected primer until mode is explicitly replace/append)", () => {
+    const c = resolveOptions({ primer: { text: "TEXT ONLY" } }) // no mode → effective default "default": text inert
     expect(c.problems).toEqual([])
-    expect(c.resolved.primer.text).toBe("TEXT ONLY")
+    expect(c.resolved.primer.text).toBe(DEFAULTS.primer.text)
+    expect(c.resolved.primer.problems).toEqual([]) // silent ignore: the explicit-default path behaves identically
   })
 
   test("primer.mode invalid → fallback to the default primer + problem naming primer.mode", () => {
@@ -1443,7 +1452,7 @@ describe("config Phase 3 — per-template deny rendering + primer modes (end-to-
     expect(sys[1]!.text).toContain("{tool}")
   })
 
-  test("primer modes end-to-end: replace/append/text-only/byte-identical-default via session.context", async () => {
+  test("primer modes end-to-end: replace/append/text-without-mode-inert/byte-identical-default via session.context", async () => {
     await setupWith({ primer: { mode: "replace", text: "MY RULES ONLY." } })
     const sysReplace: any[] = []
     await hooks["session.context"]({ system: sysReplace, messages: [] })
@@ -1456,10 +1465,11 @@ describe("config Phase 3 — per-template deny rendering + primer modes (end-to-
     expect(sysAppend.length).toBe(1)
     expect(sysAppend[0]!.text).toBe(DEFAULTS.primer.text + "\n\nADDENDUM.")
 
-    await setupWith({ primer: { text: "TEXT ONLY OVERRIDE." } }) // effective default mode "replace"
+    await setupWith({ primer: { text: "TEXT ONLY OVERRIDE." } }) // no mode → configured text inert (fix-round-1 ruling)
     const sysTextOnly: any[] = []
     await hooks["session.context"]({ system: sysTextOnly, messages: [] })
-    expect(sysTextOnly[0]!.text).toBe("TEXT ONLY OVERRIDE.")
+    expect(sysTextOnly.length).toBe(1)
+    expect(sysTextOnly[0]!.text).toBe(DEFAULTS.primer.text) // primer UNCHANGED
 
     await setupWith({}) // defaults → byte-identical PRIMER, no problems part
     const sysDefault: any[] = []

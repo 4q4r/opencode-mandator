@@ -42,14 +42,16 @@
 //     interpolate today; an unknown {var} in a configured template is caught at resolve
 //     time (it would otherwise leak into denies verbatim via fill()).
 //
-// Primer modes (Phase 3 brief; design §A #35 as amended — owner ruling 5):
-//   "default" → DEFAULTS.primer.text verbatim (primer.text ignored)
-//   "replace" → primer.text verbatim (DEFAULTS ignored) — the EFFECTIVE default mode,
-//               so a bare primer.text override works standalone
+// Primer modes (Phase 3 brief; design §A #35 as amended — owner ruling 5 + the
+// fix-round-1 controller ruling on PR #12: the frozen default mode is "default"):
+//   "default" → DEFAULTS.primer.text verbatim (primer.text ignored) — the EFFECTIVE
+//               default mode: a bare primer.text is inert until replace/append is set
+//               explicitly (the shipped PRIMER stays pinned)
+//   "replace" → primer.text verbatim (DEFAULTS ignored)
 //   "append"  → DEFAULTS.primer.text + "\n\n" + primer.text
 //   Invalid mode or missing/invalid text in replace/append ⇒ default primer + problem.
 //   With NO options the resolved primer.text is DEFAULTS.primer.text verbatim
-//   (byte-identical behavior; DEFAULTS.primer.mode = "replace" + its own text).
+//   (byte-identical behavior; DEFAULTS.primer.mode = "default" + its own text).
 //
 // FIXED trailer rule (owner ruling 4, design §E-8): the identical-loop deny is composed
 // WITHOUT the compliance trailer in the PLUGIN regardless of template content — the
@@ -523,13 +525,14 @@ function mcpSkillHintsOption(
 }
 
 // Primer group (Phase 3): resolve primer.mode/primer.text into the FINAL injected text.
-// Modes (phase-3 brief): "default" → DEFAULTS.primer.text verbatim (text ignored);
-// "replace" → text verbatim; "append" → DEFAULTS.primer.text + "\n\n" + text. The
-// effective default mode is DEFAULTS.primer.mode ("replace"), so a bare primer.text
-// override works standalone. An EXPLICIT replace/append mode without a configured text
-// (or with an invalid one) ⇒ the default primer + a fallback problem (presentation
-// semantics); the IMPLICIT default mode pairs with the default text silently — the
-// no-options resolution stays zero-problems byte-identical.
+// Modes (phase-3 brief + fix-round-1 ruling): "default" → DEFAULTS.primer.text verbatim
+// (text ignored); "replace" → text verbatim; "append" → DEFAULTS.primer.text + "\n\n" +
+// text. The effective default mode is DEFAULTS.primer.mode ("default"), so a bare
+// primer.text is silently INERT — the injected primer changes only when mode is
+// explicitly set to replace/append. An EXPLICIT replace/append mode without a configured
+// text (or with an invalid one) ⇒ the default primer + a fallback problem (presentation
+// semantics); the default mode (implicit or explicit) ignores configured text silently —
+// the no-options resolution stays zero-problems byte-identical.
 function resolvePrimer(
   raw: Record<string, unknown>,
   problems: string[],
