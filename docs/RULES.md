@@ -196,11 +196,22 @@ Missing-item format: `skill "<id>"` and `read of <path>` — e.g. at zero state 
 items; at base-complete a `subagent` call lists only the 3 orchestrator skills + 2
 workflow reads.
 
+Wording configurability (Flexibility Phase 3): every deny template above is the
+default of a `messages.*` option (§6.2) and can be reworded via config with `{var}`
+substitution (`{agent}`, `{missing}`, `{target}`, `{blocks}`, `{n}`, `{cap}`,
+`{tool}`, `{skill}`, `{hint}` — exactly the dynamic values in this table). What is
+NOT configurable: the trailer's **presence** on every deny except row 8 (a code rule
+— a configured row-8 template stays trailer-less whatever it says), the
+`DENIED by dispatch-policy plugin:` / `Owner mandate:` prefixes (they live inside
+the default templates, so an override carries its own attribution), and the
+row-4 empty-prompt prefix. An unknown `{var}` in a configured template falls back
+to the default template + a recorded problem (§6.3).
+
 ## 4. Passive layers
 
 | :-- | Layer | Behavior |
 | :-- | :-- | :-- |
-| 1 | Primer injection | `session.context` hook pushes the owner-approved PRIMER (13 bullets; includes the cloakbrowser owner-lock: humanize=True + human_preset=careful on every invocation, and the five-block dispatch-brief quality rules — normative spec: docs/BRIEFS.md) as a system text part before **every** model request; survives compaction (system parts reassembled per request). |
+| 1 | Primer injection | `session.context` hook pushes the owner-approved PRIMER (13 bullets; includes the cloakbrowser owner-lock: humanize=True + human_preset=careful on every invocation, and the five-block dispatch-brief quality rules — normative spec: docs/BRIEFS.md) as a system text part before **every** model request; survives compaction (system parts reassembled per request). The injected text is `primer.mode`/`primer.text`-configurable (§6.2): `default` → the 13-bullet PRIMER verbatim; `replace` → configured text verbatim; `append` → PRIMER + `"\n\n"` + configured text. |
 | 2 | Tool description hint | One policy line appended to the `subagent` tool description at selection time (missing tool IDs are ignored by the editor — a rename degrades to the interception layers only). |
 
 ## 5. Safety valves and failure modes
@@ -215,16 +226,15 @@ workflow reads.
 - **Atomic install only**: never multi-edit the live file (interim states get
   hot-reloaded). `install.sh` enforces single `mv` installs by construction.
 
-## 6. Configuration (Flexibility Phase 1+2)
+## 6. Configuration (Flexibility Phase 1+2+3)
 
 The plugin reads `options` from the **object form** of the `plugins` array entry in
 `opencode.json` (string entries and file-discovered plugins carry no options).
 `ctx.options` is an untyped flat JSON record — this plugin owns 100% of validation,
 defaults, and error handling (`src/config.ts` → `resolveOptions`). Phase 1 wired the
-**11 enforcement knobs** and Phase 2 the remaining **enforcement-surface options**
-(+10; **26 total**, table below); the `messages`/`primer` groups exist in
-`src/defaults.ts` and are wired in Phase 3 — if present in `options` today they are
-**warned + ignored**. With NO options the resolved config is byte-identical to the
+**11 enforcement knobs**, Phase 2 the remaining **enforcement-surface options** (+10),
+and Phase 3 the **presentation groups** (+15; **36 options total**, table below — the
+taxonomy is complete). With NO options the resolved config is byte-identical to the
 pre-migration hardcodes (the baseline test suite is the parity contract).
 
 ### 6.1 Loading modes, precedence, restart rule
@@ -253,7 +263,7 @@ pre-migration hardcodes (the baseline test suite is the parity contract).
   untouched), prints the ready-to-paste global-config snippet with the double-load
   warning, and points at `scripts/probe-options.sh` for the end-to-end options probe.
 
-### 6.2 Option table (Phase 1+2 — 26 options)
+### 6.2 Option table (Phase 1+2+3 — 36 options)
 
 | :-- | Option | Type | Default (= today) | Effect when overridden |
 | :-- | :-- | :-- | :-- | :-- |
@@ -278,8 +288,21 @@ pre-migration hardcodes (the baseline test suite is the parity contract).
 | 19 | `caps.chainOverrideMarker` | `string` (non-empty) | `"[chain-cap-override]"` | The Variant-A escape token (marker + non-empty reason); compiled to `escape(marker) + \s*\S/i` per setup |
 | 20 | `paths.memoryIndex` | `string` (path, `~` ok) | `"~/.config/opencode/MEMORY.md"` | The root index file protected by the ext-6.6 overwrite guard (resolve + exact-match rule preserved) |
 | 21 | `paths.memoryTree` | `string` (dir, `~` ok) | `"~/.config/opencode/memory"` | The protected tree (home-anchored containment; dot-segment bypass still impossible — resolution before classification) |
-
-Rows 22+ (`messages.*`, `primer.*`) are Phase 3 — warned + ignored today.
+| 22 | `messages.complianceWarning` | `string` (template, no `{var}`) | the shared trailer verbatim | Wording of the deny trailer — **presence is fixed in code** (§6.3, §3): appended to every deny except row 8, whatever this option says |
+| 23 | `messages.generalBan` | `string` (template, `{agent}`) | §3 row 1 minus trailer | The agent-ban deny; `{agent}` = the banned value |
+| 24 | `messages.backgroundBan` | `string` (template, no `{var}`) | §3 row 2 minus trailer | The background-requirement deny |
+| 25 | `messages.agentMissing` | `string` (template, no `{var}`) | §3 row 7 minus trailer | The ext-6.7 agent-missing deny |
+| 26 | `messages.gateMissing` | `string` (template, `{missing}`) | §3 row 3 minus trailer | The base-gate deny; `{missing}` = the "; "-joined missing list |
+| 27 | `messages.structureFail` | `string` (template, `{target}` `{missing}` `{blocks}`) | §3 row 4 minus trailer | The structure deny; `{target}` = `subagent dispatch` / `MCP tool "<name>"`, `{blocks}` = the " / "-joined profile guide. The empty-prompt prefix stays hardcoded (code rule) |
+| 28 | `messages.memoryMandateFail` | `string` (template, no `{var}`) | §3 row 5 minus trailer | The ext-6.1 memory-mandate deny |
+| 29 | `messages.memoryOverwriteFail` | `string` (template, no `{var}`) | §3 row 6 minus trailer | The ext-6.6 memory-overwrite deny |
+| 30 | `messages.identicalLoopFail` | `string` (template, `{n}`) | §3 row 8 verbatim | The identical-loop deny — **composed WITHOUT the trailer in code regardless of this template's content** (owner ruling 4; a template embedding trailer text is a content bug, caught by e2e tests) |
+| 31 | `messages.chainCapFail` | `string` (template, `{n}` `{cap}`) | §3 row 9 minus trailer | The continuation-chain deny, with the trailer as today |
+| 32 | `messages.mcpSkillFail` | `string` (template, `{tool}` `{skill}` `{hint}`) | §3 row 10 minus trailer | The MCP→skill deny; `{hint}` comes from `messages.mcpSkillHints` |
+| 33 | `messages.mcpSkillHints` | `Record<skill, string>` | 2 entries (context7-mcp, adb-mcp) | Per-skill usage hints substituted into `{hint}`; ANY skill keys are valid (future skills); a missing key → the hardcoded generic `load it before driving this server` |
+| 34 | `messages.descriptionHint` | `string` (template, no `{var}`) | the policy hint verbatim | The one-line hint appended to the first dispatch tool's description at selection time |
+| 35 | `primer.mode` | `"default" \| "replace" \| "append"` | `"replace"` (pairing with the default `primer.text` = byte-identical injection) | `default` → the 13-bullet PRIMER verbatim (configured `primer.text` ignored); `replace` → `primer.text` verbatim; `append` → PRIMER + `"\n\n"` + `primer.text` (install-specific addenda). The effective default mode `replace` is why a bare `primer.text` override works standalone |
+| 36 | `primer.text` | `string` (non-empty) | the PRIMER v2 text | The injected content in `replace`/`append` mode. Recommended vehicle for big text: OpenCode's native `{file:~/.config/opencode/primer.txt}` variable substitution — keeps JSON readable and the text diffable |
 
 ### 6.3 Validation and failure semantics (owner rulings 2026-11-07 — hybrid)
 
@@ -315,10 +338,30 @@ Rows 22+ (`messages.*`, `primer.*`) are Phase 3 — warned + ignored today.
   `structure.stitchPromptTools` / `gates.mcpRequirements` = valid + inert (§C empty
   lists ruling). `gates.readTargets` = `[]` valid + startup warning (the read
   prerequisite becomes inert — the vacuous-gate precedent). **Unknown keys anywhere** =
-  warn (problem recorded) + ignore. **Unwired groups** (`messages`/`primer` → Phase 3)
-  = warn + ignored entirely. **`null` caps** = guard off (valid, no warning).
+  warn (problem recorded) + ignore. **`null` caps** = guard off (valid, no warning).
 - **A present-but-non-object `options` value** cannot name a group ⇒ every enforcement
   guard fails closed (one problem clause, effective caps 1).
+- **Presentation groups fail SOFT** (`messages`, `primer` — Phase 3, owner hybrid §C(c)):
+  an invalid entry (wrong type, empty string, unknown `{var}`, invalid `primer.mode`,
+  missing/invalid `primer.text` in replace/append) falls back to the **built-in default**
+  and records a problem naming the option path — wording problems must never brick
+  enforcement. A non-object `messages`/`primer` group is warn + ignored **entirely**
+  (all defaults). Unknown keys inside them are warn + ignore like everywhere else.
+  Presentation problems surface only through the problems system part — they never
+  produce CONFIG-ERROR denies and never mark a guard broken.
+- **`{var}` substitution rule (Phase 3)**: each message template accepts exactly the
+  placeholders its deny builder substitutes (row 22: none; 23: `{agent}`; 26:
+  `{missing}`; 27: `{target}` `{missing}` `{blocks}`; 30: `{n}`; 31: `{n}` `{cap}`;
+  32: `{tool}` `{skill}` `{hint}`; 24/25/28/29/33/34: none). A configured template
+  referencing anything else is caught at resolve time: fallback to the default template
+  + problem (the placeholder would otherwise leak into denies verbatim). Trailer
+  presence and the identical-loop no-trailer exception are **code rules**, not template
+  content (owner ruling 4).
+- **Primer-mode rule (Phase 3)**: an explicit `primer.mode: "replace"` / `"append"`
+  without a usable `primer.text` falls back to the default primer + problem; the
+  **implicit** default mode pairs with the default text silently (the no-options
+  resolution stays zero-problems byte-identical). `primer.mode: "default"` ignores
+  `primer.text` by definition.
 - **Problem surfacing**: every problem (error or warning) is pushed as an additional
   system text part `dispatch-policy config problems: <problems joined by "; ">` AFTER
   the PRIMER part in `session.context`. The PRIMER part itself is byte-identical to
@@ -356,4 +399,6 @@ Rows 22+ (`messages.*`, `primer.*`) are Phase 3 — warned + ignored today.
 ```
 
 Omitting `options` entirely reproduces current behavior exactly (file-discovery
-installs and the baseline suite exercise exactly that path).
+installs and the baseline suite exercise exactly that path). Complete worked examples —
+a full alternative-install config (§B of the design report), a minimal-override setup,
+and a primer-append setup — live in [`docs/CONFIG-EXAMPLES.md`](CONFIG-EXAMPLES.md).

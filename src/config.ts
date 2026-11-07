@@ -1,16 +1,16 @@
-// src/config.ts — Flexibility Phase 1+2: the options resolver for the dispatch-policy
-// plugin (task-phase1-brief.md + task-phase2-brief.md; design flex-design-report.md
-// §A/§C/§D, owner rulings 2026-11-07 — do not re-litigate).
+// src/config.ts — Flexibility Phase 1+2+3: the options resolver for the dispatch-policy
+// plugin (task-phase1/2/3-brief.md; design flex-design-report.md §A/§C/§D, owner rulings
+// 2026-11-07 — do not re-litigate).
 //
 // `resolveOptions(raw)` validates + merges the raw `ctx.options` object (untyped flat
 // JSON per the OpenCode plugin SDK — the plugin owns 100% of validation) over DEFAULTS.
 // Phase 1 wired 11 enforcement knobs (dispatch.*, skills.*, gates.tools/exaSubstring,
-// caps.*); Phase 2 wires the remaining enforcement-surface options (+10; 26 total):
-//   gates.mcpRequirements / gates.readTargets / gates.memoryMandatePattern /
-//   structure.blocks / structure.subagentProfile / structure.stitchProfile /
-//   structure.stitchPromptTools / structure.stitchMinPrompt / paths.memoryIndex /
-//   paths.memoryTree
-// (messages/primer remain Phase 3 per the explicit non-goals and are warn+ignored).
+// caps.*); Phase 2 wired the remaining enforcement-surface options (+10): gates.* /
+// structure.* / paths.*. Phase 3 wires the PRESENTATION groups (+15; 37 total):
+//   messages.* (13: 12 deny/description templates + the mcpSkillHints record) and
+//   primer.mode / primer.text
+// — the last unwired groups; the taxonomy is complete (36 options total; the design
+// report's "37" prose double-counts dispatch.tools — its own §A numbering ends at 36).
 //
 // Owner-approved HYBRID failure semantics (§C(c)):
 //   - Enforcement groups (dispatch, skills, gates, structure, caps, paths): an invalid
@@ -33,6 +33,28 @@
 //   - Cap disable representation: `null` means the guard is off (owner ruling 3).
 //   - A raw options value that is present but not a plain object cannot name a group, so
 //     EVERY enforcement group fails closed (the plugin must never be silently weaker).
+//   - PRESENTATION groups (messages, primer — Phase 3): an invalid entry (wrong type,
+//     empty string, unknown {var}, invalid primer mode, missing primer.text) falls back
+//     to the BUILT-IN DEFAULT and records a problem — wording problems must never brick
+//     enforcement (design §C: "a misconfigured enforcer enforces nothing reliably" does
+//     not extend to prose). A non-object messages/primer group is warn + ignored
+//     entirely. The per-template {var} sets map 1:1 to what the deny builders
+//     interpolate today; an unknown {var} in a configured template is caught at resolve
+//     time (it would otherwise leak into denies verbatim via fill()).
+//
+// Primer modes (Phase 3 brief; design §A #35 as amended — owner ruling 5):
+//   "default" → DEFAULTS.primer.text verbatim (primer.text ignored)
+//   "replace" → primer.text verbatim (DEFAULTS ignored) — the EFFECTIVE default mode,
+//               so a bare primer.text override works standalone
+//   "append"  → DEFAULTS.primer.text + "\n\n" + primer.text
+//   Invalid mode or missing/invalid text in replace/append ⇒ default primer + problem.
+//   With NO options the resolved primer.text is DEFAULTS.primer.text verbatim
+//   (byte-identical behavior; DEFAULTS.primer.mode = "replace" + its own text).
+//
+// FIXED trailer rule (owner ruling 4, design §E-8): the identical-loop deny is composed
+// WITHOUT the compliance trailer in the PLUGIN regardless of template content — the
+// resolver deliberately does not police trailer text inside templates (a template that
+// embeds trailer text is a content bug, caught by parity/e2e tests).
 //
 // Every problem is a plain human-readable string. The union of all problems (errors and
 // warnings) is surfaced by the plugin as a system text part AFTER the PRIMER part
@@ -94,17 +116,35 @@ export type ResolvedConfig = {
     chainMaxProblems: string[] // caps.chainMax errors (effective cap 1)
     markerProblems: string[] // caps.chainOverrideMarker errors (escape fails closed)
   }
+  // Phase 3 presentation groups: resolved VALUES carry the fallback already applied
+  // (an invalid entry resolves to the built-in default; the problem is recorded). These
+  // are warn-class — they never mark a guard broken and never produce CONFIG-ERRORs.
+  messages: {
+    complianceWarning: string
+    generalBan: string
+    backgroundBan: string
+    agentMissing: string
+    gateMissing: string
+    structureFail: string
+    memoryMandateFail: string
+    memoryOverwriteFail: string
+    identicalLoopFail: string
+    chainCapFail: string
+    mcpSkillFail: string
+    mcpSkillHints: Record<string, string>
+    descriptionHint: string
+    problems: string[] // presentation fallbacks (unknown {var}, wrong type, …)
+  }
+  primer: {
+    text: string // the FINAL injected system text (mode applied; fallback = DEFAULTS.primer.text)
+    problems: string[] // presentation fallbacks (invalid mode, missing/invalid text)
+  }
 }
 
 export type ResolveResult = { resolved: ResolvedConfig; problems: string[] }
 
-// Groups recognized by the taxonomy (DEFAULTS). messages/primer exist in DEFAULTS but
-// are NOT wired until Phase 3 — if present they warn + are ignored entirely.
+// Groups recognized by the taxonomy (DEFAULTS) — all wired as of Phase 3 (37 options).
 const KNOWN_GROUPS = ["dispatch", "skills", "gates", "caps", "structure", "paths", "messages", "primer"]
-const UNWIRED_PHASE: Record<string, string> = {
-  messages: "Phase 3",
-  primer: "Phase 3",
-}
 // Known keys per wired group; anything else inside a group is an unknown key (warn+ignore).
 const GROUP_KEYS: Record<string, string[]> = {
   dispatch: ["tools", "forbiddenAgents", "requireBackground", "requireAgent"],
@@ -113,6 +153,41 @@ const GROUP_KEYS: Record<string, string[]> = {
   caps: ["identicalMax", "chainMax", "chainOverrideMarker"],
   structure: ["blocks", "subagentProfile", "stitchProfile", "stitchPromptTools", "stitchMinPrompt"],
   paths: ["memoryIndex", "memoryTree"],
+  messages: [
+    "complianceWarning",
+    "generalBan",
+    "backgroundBan",
+    "agentMissing",
+    "gateMissing",
+    "structureFail",
+    "memoryMandateFail",
+    "memoryOverwriteFail",
+    "identicalLoopFail",
+    "chainCapFail",
+    "mcpSkillFail",
+    "mcpSkillHints",
+    "descriptionHint",
+  ],
+  primer: ["mode", "text"],
+}
+
+// Per-template {var} sets (Phase 3): exactly the placeholders each deny builder
+// substitutes (design §A "messages" — vars map 1:1 to today's interpolations). A
+// configured template referencing anything else would leak the placeholder verbatim
+// into the deny via fill() — caught here at resolve time. Templates without dynamic
+// values have an EMPTY known set: any {var} in them is unknown.
+const MESSAGE_TEMPLATE_VARS: Record<string, readonly string[]> = {
+  complianceWarning: [],
+  generalBan: ["agent"],
+  backgroundBan: [],
+  agentMissing: [],
+  gateMissing: ["missing"],
+  structureFail: ["target", "missing", "blocks"],
+  memoryMandateFail: [],
+  memoryOverwriteFail: [],
+  identicalLoopFail: ["n"],
+  chainCapFail: ["n", "cap"],
+  mcpSkillFail: ["tool", "skill", "hint"],
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -397,6 +472,120 @@ function positiveIntOption(
   return fallback
 }
 
+// Presentation-domain message template (Phase 3): a present value must be a non-empty
+// string whose {var} placeholders are all in the template's known set; otherwise the
+// DEFAULT template is kept and a fallback problem is recorded (presentation semantics —
+// wording problems never brick enforcement).
+function messageTemplateOption(
+  raw: Record<string, unknown>,
+  path: string,
+  problems: string[],
+  fallback: string,
+): string {
+  const known = MESSAGE_TEMPLATE_VARS[keyOf(path)] ?? []
+  const v = raw[keyOf(path)]
+  if (v === undefined) return fallback
+  if (typeof v !== "string" || v.length === 0) {
+    problems.push(`${path} must be a non-empty string (got ${fmtGot(v)}); falling back to the default template (presentation warning)`)
+    return fallback
+  }
+  const unknown = [...new Set([...v.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).filter((k) => !known.includes(k)))]
+  if (unknown.length > 0) {
+    const knownList = known.map((k) => `{${k}}`).join(", ") || "none"
+    problems.push(
+      `${path} references unknown placeholder(s) ${unknown.map((k) => `{${k}}`).join(", ")} (known: ${knownList}); falling back to the default template (presentation warning)`,
+    )
+    return fallback
+  }
+  return v
+}
+
+// messages.mcpSkillHints (Phase 3): a plain-object record of non-empty string hints;
+// ANY skill keys are valid (future skills). Invalid ⇒ the default hints + problem.
+function mcpSkillHintsOption(
+  raw: Record<string, unknown>,
+  path: string,
+  problems: string[],
+  fallback: Record<string, string>,
+): Record<string, string> {
+  const v = raw[keyOf(path)]
+  if (v === undefined) return { ...fallback }
+  const ok =
+    isPlainObject(v) &&
+    Object.values(v).every((s) => typeof s === "string" && s.length > 0)
+  if (!ok) {
+    problems.push(
+      `${path} must be a plain object record of non-empty string hints (got ${fmtGot(v)}); falling back to the default hints (presentation warning)`,
+    )
+    return { ...fallback }
+  }
+  return { ...(v as Record<string, string>) }
+}
+
+// Primer group (Phase 3): resolve primer.mode/primer.text into the FINAL injected text.
+// Modes (phase-3 brief): "default" → DEFAULTS.primer.text verbatim (text ignored);
+// "replace" → text verbatim; "append" → DEFAULTS.primer.text + "\n\n" + text. The
+// effective default mode is DEFAULTS.primer.mode ("replace"), so a bare primer.text
+// override works standalone. An EXPLICIT replace/append mode without a configured text
+// (or with an invalid one) ⇒ the default primer + a fallback problem (presentation
+// semantics); the IMPLICIT default mode pairs with the default text silently — the
+// no-options resolution stays zero-problems byte-identical.
+function resolvePrimer(
+  raw: Record<string, unknown>,
+  problems: string[],
+  groupBroken: boolean,
+): { text: string; problems: string[] } {
+  const primerProblems: string[] = []
+  const fallbackWith = (): { text: string; problems: string[] } => {
+    problems.push(...primerProblems)
+    return { text: DEFAULTS.primer.text, problems: primerProblems }
+  }
+  if (groupBroken) return { text: DEFAULTS.primer.text, problems: primerProblems } // group warned+ignored by the caller
+
+  const explicitMode = raw.mode !== undefined
+  let mode: string = DEFAULTS.primer.mode
+  if (explicitMode) {
+    if (raw.mode === "default" || raw.mode === "replace" || raw.mode === "append") {
+      mode = raw.mode
+    } else {
+      primerProblems.push(
+        `primer.mode must be "default", "replace", or "append" (got ${fmtGot(raw.mode)}); falling back to the default primer (presentation warning)`,
+      )
+      return fallbackWith()
+    }
+  }
+
+  // Text source: a valid configured string; a present-but-invalid value is a fallback
+  // problem in every mode (the user configured something unusable).
+  let text: string | undefined
+  if (raw.text !== undefined) {
+    if (typeof raw.text === "string" && raw.text.length > 0) {
+      text = raw.text
+    } else {
+      primerProblems.push(
+        `primer.text must be a non-empty string (got ${fmtGot(raw.text)}); falling back to the default primer (presentation warning)`,
+      )
+      return fallbackWith()
+    }
+  }
+
+  if (mode === "default") return { text: DEFAULTS.primer.text, problems: primerProblems } // configured text ignored
+  if (text !== undefined) {
+    return mode === "append"
+      ? { text: DEFAULTS.primer.text + "\n\n" + text, problems: primerProblems }
+      : { text, problems: primerProblems }
+  }
+  if (explicitMode) {
+    primerProblems.push(
+      `primer.text is required when primer.mode is "${mode}" (got ${fmtGot(raw.text)}); falling back to the default primer (presentation warning)`,
+    )
+    return fallbackWith()
+  }
+  // Implicit default mode + no configured text = the option defaults pairing: zero
+  // problems, byte-identical injected text (the no-options parity path).
+  return { text: DEFAULTS.primer.text, problems: primerProblems }
+}
+
 function scanUnknownKeys(group: string, obj: Record<string, unknown>, problems: string[]): void {
   for (const key of Object.keys(obj)) {
     if (!GROUP_KEYS[group].includes(key)) {
@@ -419,11 +608,6 @@ export function resolveOptions(raw: unknown): ResolveResult {
     for (const key of Object.keys(raw as Record<string, unknown>)) {
       if (!KNOWN_GROUPS.includes(key)) {
         problems.push(`unknown option key "${key}" ignored (warning)`)
-      }
-    }
-    for (const [group, phase] of Object.entries(UNWIRED_PHASE)) {
-      if (group in (raw as Record<string, unknown>)) {
-        problems.push(`options group "${group}" is not configurable until ${phase} — ignored (warning)`)
       }
     }
   }
@@ -686,6 +870,107 @@ export function resolveOptions(raw: unknown): ResolveResult {
     markerProblems,
   }
 
+  // --- messages group (Phase 3, presentation domain) ---
+  // Presentation semantics: an invalid entry falls back to the DEFAULT template with a
+  // recorded problem; a non-object group is warn + ignored entirely. Enforcement is
+  // never affected — wording problems must not brick the guards.
+  const messagesProblems: string[] = []
+  const messagesRaw = o.messages
+  const messagesOK = !("messages" in o) || isPlainObject(messagesRaw)
+  if ("messages" in o && !messagesOK) {
+    problems.push(
+      `options group "messages" must be a plain object (got ${fmtGot(messagesRaw)}); ignored (presentation warning)`,
+    )
+  }
+  const msg = messagesOK && isPlainObject(messagesRaw) ? messagesRaw : {}
+  if (messagesOK && "messages" in o) scanUnknownKeys("messages", msg, problems)
+  const messages: ResolvedConfig["messages"] = {
+    complianceWarning: messageTemplateOption(
+      msg,
+      "messages.complianceWarning",
+      messagesProblems,
+      DEFAULTS.messages.complianceWarning,
+    ),
+    generalBan: messageTemplateOption(msg, "messages.generalBan", messagesProblems, DEFAULTS.messages.generalBan),
+    backgroundBan: messageTemplateOption(
+      msg,
+      "messages.backgroundBan",
+      messagesProblems,
+      DEFAULTS.messages.backgroundBan,
+    ),
+    agentMissing: messageTemplateOption(
+      msg,
+      "messages.agentMissing",
+      messagesProblems,
+      DEFAULTS.messages.agentMissing,
+    ),
+    gateMissing: messageTemplateOption(msg, "messages.gateMissing", messagesProblems, DEFAULTS.messages.gateMissing),
+    structureFail: messageTemplateOption(
+      msg,
+      "messages.structureFail",
+      messagesProblems,
+      DEFAULTS.messages.structureFail,
+    ),
+    memoryMandateFail: messageTemplateOption(
+      msg,
+      "messages.memoryMandateFail",
+      messagesProblems,
+      DEFAULTS.messages.memoryMandateFail,
+    ),
+    memoryOverwriteFail: messageTemplateOption(
+      msg,
+      "messages.memoryOverwriteFail",
+      messagesProblems,
+      DEFAULTS.messages.memoryOverwriteFail,
+    ),
+    identicalLoopFail: messageTemplateOption(
+      msg,
+      "messages.identicalLoopFail",
+      messagesProblems,
+      DEFAULTS.messages.identicalLoopFail,
+    ),
+    chainCapFail: messageTemplateOption(
+      msg,
+      "messages.chainCapFail",
+      messagesProblems,
+      DEFAULTS.messages.chainCapFail,
+    ),
+    mcpSkillFail: messageTemplateOption(
+      msg,
+      "messages.mcpSkillFail",
+      messagesProblems,
+      DEFAULTS.messages.mcpSkillFail,
+    ),
+    mcpSkillHints: mcpSkillHintsOption(
+      msg,
+      "messages.mcpSkillHints",
+      messagesProblems,
+      DEFAULTS.messages.mcpSkillHints as Record<string, string>,
+    ),
+    descriptionHint: messageTemplateOption(
+      msg,
+      "messages.descriptionHint",
+      messagesProblems,
+      DEFAULTS.messages.descriptionHint,
+    ),
+    problems: messagesProblems,
+  }
+  // Presentation problems have no deny channel — their surfacing channel is the
+  // top-level problems part ("loud startup warning naming the path", design §C).
+  problems.push(...messagesProblems)
+
+  // --- primer group (Phase 3, presentation domain) ---
+  const primerRaw = o.primer
+  const primerOK = !("primer" in o) || isPlainObject(primerRaw)
+  if ("primer" in o && !primerOK) {
+    problems.push(
+      `options group "primer" must be a plain object (got ${fmtGot(primerRaw)}); ignored (presentation warning)`,
+    )
+  }
+  const prm = primerOK && isPlainObject(primerRaw) ? primerRaw : {}
+  if (primerOK && "primer" in o) scanUnknownKeys("primer", prm, problems)
+  const primer = resolvePrimer(prm, problems, !primerOK)
+
   // Non-object raw: every enforcement guard fails closed (see totalBreak above), and the
   // clause itself is part of the surfaced problem list. The caps reflect the effective
   // values (1), matching how the guards treat them — never "guard off".
@@ -704,5 +989,5 @@ export function resolveOptions(raw: unknown): ResolveResult {
     caps.chainMax = 1
   }
 
-  return { resolved: deepFreeze({ dispatch, skills, gates, structure, paths, caps }), problems }
+  return { resolved: deepFreeze({ dispatch, skills, gates, structure, paths, caps, messages, primer }), problems }
 }
