@@ -1,4 +1,5 @@
 // Logic probe for dispatch-policy.ts (gate extension 3) — real module + mock ctx.
+import os from "node:os"
 import plugin from "./dispatch-policy.ts"
 
 const hooks: Record<string, (event: any) => any> = {}
@@ -43,7 +44,7 @@ check("execute.after registered", typeof hooks["tool.execute.after"] === "functi
 check("session.context registered", typeof hooks["session.context"] === "function")
 
 const S = "sess-ext3"
-const HOME = "/home/whoami"
+const HOME = os.homedir()
 
 // --- Phase 0: zero state ---
 let msg = await denyMsg({ tool: "shell", sessionID: S, input: {} })
