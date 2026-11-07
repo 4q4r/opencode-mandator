@@ -4,11 +4,20 @@ The exact behavior of the `dispatch-policy` plugin, extracted from `src/dispatch
 (the single source of truth; this document describes it, never replaces it).
 Verified against OpenCode v2.0.27. English only, tables aligned `| :-- |`.
 
+> **Opt-in enforcement (owner decision 2026-11-07).** The built-in defaults are EMPTY:
+> with no plugin options the plugin is completely INERT — no gates, no denies, no primer
+> injection, no description hint, no config problems. Everything below describes the
+> behavior of a CONFIGURED plugin; the canonical owner setup lives in
+> `tests/fixtures/mandator-setup.json` (the values shown in the tables below).
+
 ## 1. Gated set
 
 A tool call whose name is in the gated set is **DENIED** until the calling session
-meets the prerequisites below. Gated names were verified against the live v2.0.27
-session DB (stored dispatches, read-only sqlite).
+meets the prerequisites below. The gated set exists only where configured
+(`gates.tools` + non-empty `gates.exaSubstring` + `gates.mcpRequirements` prefixes —
+§6.2); an unconfigured plugin gates nothing. The names below are the canonical owner
+setup's gated set, verified against the live v2.0.27 session DB (stored dispatches,
+read-only sqlite).
 
 | :-- | Tool name(s) | Status on this install |
 | :-- | :-- | :-- |
@@ -26,6 +35,9 @@ non-exa MCP tools **without a skill requirement** (§2 row 11 — since ext 7.1 
 `context7*` / `adb_mcp*` prefixes are the one gated MCP exception).
 
 ## 2. Prerequisites per action
+
+Applies to a CONFIGURED plugin (see the §1 note: empty defaults enforce nothing). Each
+row below is active only while its option makes the guard meaningful (§6.1 table).
 
 | :-- | Action | Prerequisites (all required, per session) |
 | :-- | :-- | :-- |
@@ -196,23 +208,29 @@ Missing-item format: `skill "<id>"` and `read of <path>` — e.g. at zero state 
 items; at base-complete a `subagent` call lists only the 3 orchestrator skills + 2
 workflow reads.
 
-Wording configurability (Flexibility Phase 3): every deny template above is the
-default of a `messages.*` option (§6.2) and can be reworded via config with `{var}`
-substitution (`{agent}`, `{missing}`, `{target}`, `{blocks}`, `{n}`, `{cap}`,
-`{tool}`, `{skill}`, `{hint}` — exactly the dynamic values in this table). What is
-NOT configurable: the trailer's **presence** on every deny except row 8 (a code rule
-— a configured row-8 template stays trailer-less whatever it says), the
-`DENIED by dispatch-policy plugin:` / `Owner mandate:` prefixes (they live inside
-the default templates, so an override carries its own attribution), and the
-row-4 empty-prompt prefix. An unknown `{var}` in a configured template falls back
-to the default template + a recorded problem (§6.3).
+Wording configurability (Flexibility Phase 3, as amended by the opt-in flip): every deny
+template above is the value of a `messages.*` option (§6.2; the canonical setup carries
+today's texts verbatim) and can be reworded via config with `{var}` substitution
+(`{agent}`, `{missing}`, `{target}`, `{blocks}`, `{n}`, `{cap}`, `{tool}`, `{skill}`,
+`{hint}` — exactly the dynamic values in this table). An EMPTY template is valid: a
+firing guard without a template still DENIES, and the deny text falls back to the
+hardcoded generic line `DENIED by dispatch-policy plugin: this action violates the
+configured dispatch policy; the deny template for this guard is not configured. Fix the
+plugin options in opencode.json, run \`opencode service restart\`, then re-run this
+exact call.` (CONFIG-ERROR-style, never configurable). What is NOT configurable: the
+trailer's **presence** on every deny except row 8 (a code rule — a configured row-8
+template stays trailer-less whatever it says), the `DENIED by dispatch-policy plugin:` /
+`Owner mandate:` prefixes (they live inside the default templates, so an override
+carries its own attribution), and the row-4 empty-prompt prefix. An unknown `{var}` in
+a configured template falls back to the empty default (generic line) + a recorded
+problem (§6.3).
 
 ## 4. Passive layers
 
 | :-- | Layer | Behavior |
 | :-- | :-- | :-- |
-| 1 | Primer injection | `session.context` hook pushes the owner-approved PRIMER (13 bullets; includes the cloakbrowser owner-lock: humanize=True + human_preset=careful on every invocation, and the five-block dispatch-brief quality rules — normative spec: docs/BRIEFS.md) as a system text part before **every** model request; survives compaction (system parts reassembled per request). The injected text is `primer.mode`/`primer.text`-configurable (§6.2): `default` → the 13-bullet PRIMER verbatim; `replace` → configured text verbatim; `append` → PRIMER + `"\n\n"` + configured text. |
-| 2 | Tool description hint | One policy line appended to the `subagent` tool description at selection time (missing tool IDs are ignored by the editor — a rename degrades to the interception layers only). |
+| 1 | Primer injection | `session.context` hook pushes the configured PRIMER as a system text part before **every** model request; survives compaction (system parts reassembled per request). NOTHING is injected when the resolved primer text is empty (the no-options default). The text is `primer.mode`/`primer.text`-configurable (§6.2): `default` → the configured `primer.text` when present, else nothing; `replace` → configured text verbatim; `append` → built-in default + `"\n\n"` + configured text. The canonical setup carries the 13-bullet PRIMER v2 (cloakbrowser owner-lock: humanize=True + human_preset=careful; five-block dispatch-brief quality rules — normative spec: docs/BRIEFS.md). |
+| 2 | Tool description hint | One policy line appended to the first dispatch tool's description at selection time — only when both the dispatch surface is configured and the hint template is non-empty (missing tool IDs are ignored by the editor — a rename degrades to the interception layers only). |
 
 ## 5. Safety valves and failure modes
 
@@ -226,22 +244,52 @@ to the default template + a recorded problem (§6.3).
 - **Atomic install only**: never multi-edit the live file (interim states get
   hot-reloaded). `install.sh` enforces single `mv` installs by construction.
 
-## 6. Configuration (Flexibility Phase 1+2+3)
+## 6. Configuration (opt-in enforcement — Flexibility Phases 1-3 + the flip)
 
 The plugin reads `options` from the **object form** of the `plugins` array entry in
 `opencode.json` (string entries and file-discovered plugins carry no options).
 `ctx.options` is an untyped flat JSON record — this plugin owns 100% of validation,
-defaults, and error handling (`src/config.ts` → `resolveOptions`). Phase 1 wired the
-**11 enforcement knobs**, Phase 2 the remaining **enforcement-surface options** (+10),
-and Phase 3 the **presentation groups** (+15; **36 options total**, table below — the
-taxonomy is complete). With NO options the resolved config is byte-identical to the
-pre-migration hardcodes (the baseline test suite is the parity contract).
+defaults, and error handling (`src/config.ts` → `resolveOptions`).
+
+**Empty-by-default semantics (owner decision "Empty defaults, setup in JSON",
+2026-11-07 — supersedes the Phase 0-3 zero-change premise):** empty/absent options are
+VALID and make the plugin completely INERT — no gates, no denies, no primer injection,
+no description hint, no config problems. Enforcement exists ONLY via explicit
+configuration. The canonical owner setup (the pre-flip defaults verbatim: all 36 option
+values including the message templates, the COMPLIANCE_WARNING trailer, and the PRIMER
+text) lives in [`tests/fixtures/mandator-setup.json`](../tests/fixtures/mandator-setup.json)
+— the controller lands it into the global `opencode.json` after merge.
+
+### 6.0 When each guard is on (guard gating on configured presence)
+
+Every guard runs ONLY when its configuration makes it meaningful:
+
+| :-- | Guard | On condition (off otherwise) |
+| :-- | :-- | :-- |
+| 1 | `general` agent ban | `dispatch.forbiddenAgents` non-empty (deny when `agent` matches any entry) |
+| 2 | Background ban | `dispatch.requireBackground: true` |
+| 3 | Agent-missing deny | `dispatch.requireAgent: true` |
+| 4 | Base skill/memory gate | the gated set is non-empty: `gates.tools` + `gates.exaSubstring` (non-empty string) + `gates.mcpRequirements` prefixes |
+| 5 | Orchestrator preflight | `skills.orchestrator` non-empty (+ the non-memory read targets demanded on the dispatch path) |
+| 6 | Fresh-dispatch structure check | `structure.subagentProfile` non-empty (blocks cross-validated) |
+| 7 | Memory-mandate keyword check | `gates.memoryMandatePattern` non-empty (compilable) |
+| 8 | Identical-dispatch breaker | `caps.identicalMax` non-null |
+| 9 | Continuation-chain cap | `caps.chainMax` non-null (an empty `caps.chainOverrideMarker` accepts NO escape marker) |
+| 10 | Memory-overwrite guard | `paths.memoryIndex` AND `paths.memoryTree` both non-empty |
+| 11 | Stitch structure check | `structure.stitchPromptTools` non-empty AND `structure.stitchMinPrompt` non-null AND `structure.stitchProfile` non-empty |
+| 12 | MCP→skill gate | per `gates.mcpRequirements` entries |
+| 13 | Primer injection | resolved `primer.text` non-empty |
+| 14 | Description hint | `dispatch.tools` non-empty AND `messages.descriptionHint` non-empty |
+
+CONFIG-ERROR denies remain hardcoded (they report the config itself — never
+configurable). A firing guard whose deny template is `""` still DENIES: the text falls
+back to the hardcoded generic line (§3).
 
 ### 6.1 Loading modes, precedence, restart rule
 
 | :-- | Mode | Options | Notes |
 | :-- | :-- | :-- | :-- |
-| File-discovery (default install) | `~/.config/opencode/plugin/dispatch-policy.ts` symlink → repo file (`install.sh` default) | never (`ctx.options` absent ⇒ pure defaults) | unchanged behavior |
+| File-discovery (default install) | `~/.config/opencode/plugin/dispatch-policy.ts` symlink → repo file (`install.sh` default) | never (`ctx.options` absent ⇒ the all-off defaults) | **inert** — enforcement requires the package mode below |
 | Package mode (the configurable path) | object form: `{ "package": "<repo>/plugin-package", "options": { … } }` | yes | `plugin-package/` is a directory with `package.json` (`name: "dispatch-policy"`) re-exporting the plugin; configured local package paths must be directories — a single file path is skipped by the loader |
 
 - **One mode at a time**: the symlink file AND a `plugins`-array entry for the same
@@ -263,31 +311,35 @@ pre-migration hardcodes (the baseline test suite is the parity contract).
   untouched), prints the ready-to-paste global-config snippet with the double-load
   warning, and points at `scripts/probe-options.sh` for the end-to-end options probe.
 
-### 6.2 Option table (Phase 1+2+3 — 36 options)
+### 6.2 Option table (36 options; "Canonical value" = the owner setup in `tests/fixtures/mandator-setup.json`)
 
-| :-- | Option | Type | Default (= today) | Effect when overridden |
+The **built-in default is empty/off for every option** (§6.0). The "Canonical value"
+column shows the owner setup carried by the fixture — the values this documentation's
+behavior tables describe. Any of them can be overridden per install.
+
+| :-- | Option | Type | Canonical value (fixture) | Effect when overridden |
 | :-- | :-- | :-- | :-- | :-- |
 | 1 | `dispatch.tools` | `string[]` | `["subagent"]` | Which tool names are dispatch-shaped (bans, structure gate, breakers, tool-description hint targets the first entry); `[]` = dispatch guards inert |
 | 2 | `dispatch.forbiddenAgents` | `string[]` | `["general"]` | The agent ban list — a dispatch is denied when `agent` matches ANY entry; `[]` = no agent ban |
 | 3 | `dispatch.requireBackground` | `boolean` | `true` | `false` stops denying `background !== true` |
 | 4 | `dispatch.requireAgent` | `boolean` | `true` | `false` disables the agent-missing deny (the general ban is independent) |
-| 5 | `skills.mandatory` | `string[]` | 4 skills (brainstorming, grilling, build-with-exa, context7-mcp) | The base gate's required skill list; `[]` = valid + startup warning, base gate inert **for skills** (the read prerequisite is a `readTargets` concern, row 12) |
-| 6 | `skills.orchestrator` | `string[]` | 3 skills (subagent-driven-development, dispatching-parallel-agents, prompt-engineering-patterns) | Extra skills required on the dispatch path only; `[]` = valid + startup warning, orchestrator skills waived (the non-memory reads stay — same row-12 note) |
+| 5 | `skills.mandatory` | `string[]` | 4 skills (brainstorming, grilling, build-with-exa, context7-mcp) | The base gate's required skill list; `[]` = valid, base gate inert **for skills** (the read prerequisite is a `readTargets` concern, row 12) |
+| 6 | `skills.orchestrator` | `string[]` | 3 skills (subagent-driven-development, dispatching-parallel-agents, prompt-engineering-patterns) | Extra skills required on the dispatch path only; `[]` = valid, orchestrator skills waived (the non-memory reads stay — same row-12 note) |
 | 7 | `gates.tools` | `string[]` | 9 names (edit, write, shell, bash, apply_patch, subagent, webfetch, websearch, execute) | The exact-match gated set (authoritative); `[]` removes exact-match entries — the exa substring rule and MCP skill-requirement prefixes still gate (rows 8, 9) |
-| 8 | `gates.exaSubstring` | `string \| null` | `"exa"` | Generalizes `tool.includes(<value>)`; `null` removes the substring rule (explicit MCP prefixes only) |
+| 8 | `gates.exaSubstring` | `string \| null` | `"exa"` | Generalizes `tool.includes(<value>)`; `""` (the built-in default) or `null` removes the substring rule (explicit MCP prefixes only) |
 | 9 | `gates.mcpRequirements` | `Array<{prefix, skill}>` | 2 entries (`context7`→context7-mcp, `adb_mcp`→adb-mcp) | The ext-7.1 MCP→skill prefix table; every prefix also extends the gated set; `[]` = valid, the MCP→skill gate is inert. Per-skill usage hints stay keyed by skillId (`messages.mcpSkillHints`) — an unknown skill gets the generic hint |
-| 10 | `gates.readTargets` | `Array<{key, suffix}>` | 3 entries (memory → `.config/opencode/MEMORY.md`; workflow → `…/topics/workflow.md`; workflow-git-pr → `…/topics/workflow-git-pr.md`) | Which `read` calls count as compliance (suffix match after `~`-expansion, absolute and `~/` forms both kept) and what the gates demand: the **`memory` key** is the base-gate read, every **other key** is demanded on the dispatch path; `[]` = valid + startup warning, the read prerequisite is inert |
-| 11 | `gates.memoryMandatePattern` | `string` (regex source, flags `iu`) | `"(MEMORY\\.md\|memory/(topics\|projects)\|глобальн\\p{L}*\\s+пам(ять\|яти)\|global memory)"` | The ext-6.1 fresh-brief keyword check (compiled at setup, never per call); an ASCII-only install swaps in a Cyrillic-free pattern. An invalid/uncompilable source fails **only the memory-mandate check** closed (its own CONFIG-ERROR) |
+| 10 | `gates.readTargets` | `Array<{key, suffix}>` | 3 entries (memory → `.config/opencode/MEMORY.md`; workflow → `…/topics/workflow.md`; workflow-git-pr → `…/topics/workflow-git-pr.md`) | Which `read` calls count as compliance (suffix match after `~`-expansion, absolute and `~/` forms both kept) and what the gates demand: the **`memory` key** is the base-gate read, every **other key** is demanded on the dispatch path; `[]` = valid, the read prerequisite is inert |
+| 11 | `gates.memoryMandatePattern` | `string` (regex source, flags `iu`) | `"(MEMORY\\.md\|memory/(topics\|projects)\|глобальн\\p{L}*\\s+пам(ять\|яти)\|global memory)"` | The ext-6.1 fresh-brief keyword check (compiled at setup, never per call); `""` (the built-in default) = the check is off; an ASCII-only install swaps in a Cyrillic-free pattern. An invalid/uncompilable source fails **only the memory-mandate check** closed (its own CONFIG-ERROR) |
 | 12 | `structure.blocks` | `Record<key, {name, pattern}>` | The five `BLOCKS` entries verbatim (keys `role`/`task`/`context`/`constraints`/`output`, names `Role`…`Output format`, current regex sources incl. RU alternatives) | The block vocabulary + matchers (pattern = regex source, compiled with flag `i`); the record is **replaced wholesale**, not merged. An invalid regex source or entry shape fails the structure guard closed with a CONFIG-ERROR naming `structure.blocks.<key>[.pattern]` |
 | 13 | `structure.subagentProfile` | `key[]` (order = deny-message order) | `["role","task","context","constraints","output"]` | The fresh-dispatch block profile; `[]` = valid, fresh dispatches un-checked. **Cross-validated**: a key not present in `structure.blocks` ⇒ structure guard fails closed, CONFIG-ERROR naming `structure.subagentProfile` |
 | 14 | `structure.stitchProfile` | `key[]` | `["task","context","constraints","output"]` | The MCP (Stitch) profile — no Role. Same cross-validation rule against `structure.blocks` (names `structure.stitchProfile`) |
 | 15 | `structure.stitchPromptTools` | `string[]` | 3 Stitch free-text prompt tools | Which MCP tools get the profile check; `[]` = valid, the surface is disabled |
-| 16 | `structure.stitchMinPrompt` | `number ≥ 1` | `120` | Below this length the stitch check never fires (tactical follow-ups flow); a huge value ⇒ surface off. Invalid ⇒ only the Stitch surface fails closed |
+| 16 | `structure.stitchMinPrompt` | `number ≥ 1 \| null` | `120` | Below this length the stitch check never fires (tactical follow-ups flow); a huge value ⇒ surface off; `null` (the built-in default) = floor off. Invalid ⇒ only the Stitch surface fails closed |
 | 17 | `caps.identicalMax` | `number ≥ 1 \| null` | `4` | Identical-dispatch breaker threshold (increment-then-check, per-session, fresh-only); `null` = breaker off |
 | 18 | `caps.chainMax` | `number ≥ 1 \| null` | `6` | Continuation-chain cap per (parent, child); counter semantics unchanged; `null` = cap off |
-| 19 | `caps.chainOverrideMarker` | `string` (non-empty) | `"[chain-cap-override]"` | The Variant-A escape token (marker + non-empty reason); compiled to `escape(marker) + \s*\S/i` per setup |
-| 20 | `paths.memoryIndex` | `string` (path, `~` ok) | `"~/.config/opencode/MEMORY.md"` | The root index file protected by the ext-6.6 overwrite guard (resolve + exact-match rule preserved) |
-| 21 | `paths.memoryTree` | `string` (dir, `~` ok) | `"~/.config/opencode/memory"` | The protected tree (home-anchored containment; dot-segment bypass still impossible — resolution before classification) |
+| 19 | `caps.chainOverrideMarker` | `string` | `"[chain-cap-override]"` | The Variant-A escape token (marker + non-empty reason); compiled to `escape(marker) + \s*\S/i` per setup; `""` (the built-in default) = NO escape marker accepted — over-cap continuations cannot unlock |
+| 20 | `paths.memoryIndex` | `string` (path, `~` ok) | `"~/.config/opencode/MEMORY.md"` | The root index file protected by the ext-6.6 overwrite guard (resolve + exact-match rule preserved); `""` (the built-in default) = guard off |
+| 21 | `paths.memoryTree` | `string` (dir, `~` ok) | `"~/.config/opencode/memory"` | The protected tree (home-anchored containment; dot-segment bypass still impossible — resolution before classification); `""` (the built-in default) = guard off |
 | 22 | `messages.complianceWarning` | `string` (template, no `{var}`) | the shared trailer verbatim | Wording of the deny trailer — **presence is fixed in code** (§6.3, §3): appended to every deny except row 8, whatever this option says |
 | 23 | `messages.generalBan` | `string` (template, `{agent}`) | §3 row 1 minus trailer | The agent-ban deny; `{agent}` = the banned value |
 | 24 | `messages.backgroundBan` | `string` (template, no `{var}`) | §3 row 2 minus trailer | The background-requirement deny |
@@ -301,8 +353,8 @@ pre-migration hardcodes (the baseline test suite is the parity contract).
 | 32 | `messages.mcpSkillFail` | `string` (template, `{tool}` `{skill}` `{hint}`) | §3 row 10 minus trailer | The MCP→skill deny; `{hint}` comes from `messages.mcpSkillHints` |
 | 33 | `messages.mcpSkillHints` | `Record<skill, string>` | 2 entries (context7-mcp, adb-mcp) | Per-skill usage hints substituted into `{hint}`; ANY skill keys are valid (future skills); a missing key → the hardcoded generic `load it before driving this server` |
 | 34 | `messages.descriptionHint` | `string` (template, no `{var}`) | the policy hint verbatim | The one-line hint appended to the first dispatch tool's description at selection time |
-| 35 | `primer.mode` | `"default" \| "replace" \| "append"` | `"default"` (pairing with the default `primer.text` = byte-identical injection; fix-round-1 ruling, PR #12) | `default` → the 13-bullet PRIMER verbatim (configured `primer.text` ignored — a bare `primer.text` is INERT until `replace`/`append` is set explicitly); `replace` → `primer.text` verbatim; `append` → PRIMER + `"\n\n"` + `primer.text` (install-specific addenda) |
-| 36 | `primer.text` | `string` (non-empty) | the PRIMER v2 text | The injected content in `replace`/`append` mode. Recommended vehicle for big text: OpenCode's native `{file:~/.config/opencode/primer.txt}` variable substitution — keeps JSON readable and the text diffable |
+| 35 | `primer.mode` | `"default" \| "replace" \| "append"` | `"default"` | `default` → the configured `primer.text` when present, else nothing (the opt-in flip: there is no shipped primer to pin — a bare `primer.text` IS effective); `replace` → `primer.text` verbatim (explicit form, identical outcome); `append` → built-in default + `"\n\n"` + `primer.text` (the built-in default is `""`, so append resolves to just the text) |
+| 36 | `primer.text` | `string` | the PRIMER v2 text (canonical setup) | The injected primer content; `""` (the built-in default) = nothing injected. Recommended vehicle for big text: OpenCode's native `{file:~/.config/opencode/primer.txt}` variable substitution — keeps JSON readable and the text diffable |
 
 ### 6.3 Validation and failure semantics (owner rulings 2026-11-07 — hybrid)
 
@@ -323,22 +375,24 @@ pre-migration hardcodes (the baseline test suite is the parity contract).
 - **Invalid cap ⇒ effective cap 1 + CONFIG-ERROR deny** — never "guard off". An invalid
   `caps.chainOverrideMarker` fails the chain guard closed for over-cap continuations
   (the one-shot escape cannot be evaluated); under-cap continuations pass normally.
-- **Broken-group scoping**: a broken `dispatch`/`gates` group still scopes its
-  CONFIG-ERROR denies at the calls the DEFAULT config would have covered (the broken
-  values are never used to widen or narrow the affected surface). Same for a broken
-  `structure`/`paths` group (Stitch CONFIG-ERRORs hit the default Stitch tools; the
-  broken ext-6.6 guard hits writes the default memory topology would have covered).
+- **Broken-group scoping (post-flip)**: the fail-closed fallback SCOPE of a broken
+  group derives from DEFAULTS — which are now EMPTY. A broken group whose shaping
+  option is itself broken (`dispatch.tools`, `gates.tools`/`mcpRequirements`/
+  `readTargets`, `structure` group shape, `structure.stitchPromptTools`, `paths`)
+  therefore covers nothing: that guard is inert and the problem surfaces loudly via
+  the config-problems part. Sub-option breakage inside a CONFIGURED group still
+  produces the CONFIG-ERROR deny at the guard's own position (the group's configured
+  scope defines where the deny fires).
 - **Precedence preserved**: bans → gate → MCP gate → structure → memory-mandate →
   counters, with the group's CONFIG-ERROR deny firing at that guard's own position
   (e.g. a zero-state fresh dispatch still receives the normal gate deny, not the
   structure CONFIG-ERROR; a malformed brief receives the structure deny before the
   memory-mandate CONFIG-ERROR).
-- **Empty lists**: `skills.mandatory` / `skills.orchestrator` = valid + startup warning
-  (honored — see table). `structure.subagentProfile` / `structure.stitchProfile` /
-  `structure.stitchPromptTools` / `gates.mcpRequirements` = valid + inert (§C empty
-  lists ruling). `gates.readTargets` = `[]` valid + startup warning (the read
-  prerequisite becomes inert — the vacuous-gate precedent). **Unknown keys anywhere** =
-  warn (problem recorded) + ignore. **`null` caps** = guard off (valid, no warning).
+- **Empty/absent = valid + INERT, no problems** (the opt-in flip — supersedes the
+  pre-flip "empty = warned" rulings): every empty list, empty string, `null` cap/floor,
+  `false` flag, empty blocks/hints record, and `primer.text: ""` is the intended
+  all-off state and produces ZERO problems. Unknown keys anywhere = warn (problem
+  recorded) + ignore.
 - **A present-but-non-object `options` value** cannot name a group ⇒ every enforcement
   guard fails closed (one problem clause, effective caps 1).
 - **Presentation groups fail SOFT** (`messages`, `primer` — Phase 3, owner hybrid §C(c)):
@@ -357,17 +411,21 @@ pre-migration hardcodes (the baseline test suite is the parity contract).
   + problem (the placeholder would otherwise leak into denies verbatim). Trailer
   presence and the identical-loop no-trailer exception are **code rules**, not template
   content (owner ruling 4).
-- **Primer-mode rule (Phase 3)**: an explicit `primer.mode: "replace"` / `"append"`
-  without a usable `primer.text` falls back to the default primer + problem; the
-  **implicit** default mode pairs with the default text silently (the no-options
-  resolution stays zero-problems byte-identical). `primer.mode: "default"` ignores
-  `primer.text` by definition.
-- **Problem surfacing**: every problem (error or warning) is pushed as an additional
-  system text part `dispatch-policy config problems: <problems joined by "; ">` AFTER
-  the PRIMER part in `session.context`. The PRIMER part itself is byte-identical to
-  `DEFAULTS.primer.text`; with zero problems nothing extra is pushed.
+- **Primer-mode rule (opt-in flip — supersedes the fix-round-1 PR #12 ruling)**: there
+  is no shipped primer to pin anymore (the built-in default text is `""`), so the
+  DEFAULT mode resolves to the CONFIGURED `primer.text` when present (zero problems),
+  else to `""` — nothing injected. `replace` is the explicit form (identical outcome to
+  default-with-text; kept for compatibility). `append` composes
+  `DEFAULTS.primer.text + "\n\n" + text` — with the empty built-in default it resolves
+  to just the text. An explicit `replace`/`append` without a usable text, or an invalid
+  mode, falls back to `""` (nothing injected) + problem.
+- **Problem surfacing**: every problem (error or warning, enforcement-group pools
+  included) is pushed as an additional system text part
+  `dispatch-policy config problems: <problems joined by "; ">` AFTER the primer
+  position in `session.context`. With zero problems (and a non-empty primer text)
+  nothing extra is pushed; with no options NOTHING is pushed at all.
 
-### 6.4 Minimal config example (Phase-1/2 keys)
+### 6.4 Minimal config example
 
 ```jsonc
 // ~/.config/opencode/opencode.jsonc (global config; apply = opencode service restart)
@@ -384,7 +442,7 @@ pre-migration hardcodes (the baseline test suite is the parity contract).
           "requireAgent": true
         },
         "skills": {
-          "mandatory": [], // no superpowers skills in this install → base gate inert for skills (warned)
+          "mandatory": [], // no superpowers skills in this install → base gate inert for skills
           "orchestrator": []
         },
         "gates": {
@@ -398,7 +456,7 @@ pre-migration hardcodes (the baseline test suite is the parity contract).
 }
 ```
 
-Omitting `options` entirely reproduces current behavior exactly (file-discovery
-installs and the baseline suite exercise exactly that path). Complete worked examples —
-a full alternative-install config (§B of the design report), a minimal-override setup,
-and a primer-append setup — live in [`docs/CONFIG-EXAMPLES.md`](CONFIG-EXAMPLES.md).
+Omitting `options` entirely (or every option empty) leaves the plugin INERT —
+enforcement exists only via explicit configuration. Complete worked examples — the
+canonical mandator setup, a minimal-override setup, and a primer-append setup — live in
+[`docs/CONFIG-EXAMPLES.md`](CONFIG-EXAMPLES.md).

@@ -4,15 +4,27 @@
 // order (bun runs tests in declaration order within a file). Structural changes only:
 // bun:test harness instead of the linear check() script, and os.homedir() instead of
 // the hardcoded "/home/whoami" (tilde-expansion parity with the plugin's own expansion).
+//
+// OPT-IN FLIP (owner decision 2026-11-07): with no options the plugin is INERT, so the
+// behavior suite runs against the CANONICAL SETUP FIXTURE (tests/fixtures/
+// mandator-setup.json — the owner setup as options, extracted verbatim from the
+// pre-flip defaults). Same deny expectations as before: the fixture carries today's
+// message texts, and the fixture's enforcement values ARE the old defaults.
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import os from "node:os"
 import path from "node:path"
+import { readFileSync } from "node:fs"
 import plugin, { _djb2, _testStat } from "../src/dispatch-policy.ts"
+
+const SETUP = JSON.parse(
+  readFileSync(new URL("./fixtures/mandator-setup.json", import.meta.url), "utf8"),
+) as Record<string, unknown>
 
 const hooks: Record<string, (event: any) => any> = {}
 let transformed: Record<string, { description: string }> | null = null
 
 const ctx: any = {
+  options: undefined as unknown,
   tool: {
     hook: async (name: string, cb: (e: any) => any) => {
       hooks[`tool.${name}`] = cb
@@ -57,6 +69,7 @@ const GOOD_STITCH_PROMPT =
   "external images. Output format: one screen with KPI cards, a weekly chart, and a bottom tab bar."
 
 beforeAll(async () => {
+  ctx.options = SETUP // the canonical owner setup — the pre-flip defaults as options
   await plugin.setup(ctx)
 })
 

@@ -1,57 +1,65 @@
-// src/config.ts — Flexibility Phase 1+2+3: the options resolver for the dispatch-policy
-// plugin (task-phase1/2/3-brief.md; design flex-design-report.md §A/§C/§D, owner rulings
-// 2026-11-07 — do not re-litigate).
+// src/config.ts — the options resolver for the dispatch-policy plugin (flexibility
+// migration Phases 1-3 + the opt-in flip, owner decisions 2026-11-07 — do not
+// re-litigate).
+//
+// OPT-IN SEMANTICS (owner ruling "Empty defaults, setup in JSON", 2026-11-07):
+// empty/absent options are VALID and make the plugin completely INERT — no gates, no
+// denies, no primer injection, no description hint, no config problems. DEFAULTS is the
+// all-off config (src/defaults.ts); enforcement exists only via explicit configuration.
+// OFF representations: [] (lists), "" (exaSubstring, memoryMandatePattern,
+// chainOverrideMarker, paths, every message template), {} (blocks, mcpSkillHints),
+// null (caps.identicalMax / caps.chainMax / structure.stitchMinPrompt), false
+// (requireBackground / requireAgent), primer { mode: "default", text: "" } → nothing.
+// The owner setup is explicit configuration — canonical snapshot:
+// tests/fixtures/mandator-setup.json (lands in opencode.json after merge).
 //
 // `resolveOptions(raw)` validates + merges the raw `ctx.options` object (untyped flat
 // JSON per the OpenCode plugin SDK — the plugin owns 100% of validation) over DEFAULTS.
-// Phase 1 wired 11 enforcement knobs (dispatch.*, skills.*, gates.tools/exaSubstring,
-// caps.*); Phase 2 wired the remaining enforcement-surface options (+10): gates.* /
-// structure.* / paths.*. Phase 3 wires the PRESENTATION groups (+15; 37 total):
-//   messages.* (13: 12 deny/description templates + the mcpSkillHints record) and
-//   primer.mode / primer.text
-// — the last unwired groups; the taxonomy is complete (36 options total; the design
-// report's "37" prose double-counts dispatch.tools — its own §A numbering ends at 36).
 //
-// Owner-approved HYBRID failure semantics (§C(c)):
+// Owner-approved HYBRID failure semantics (§C(c)) for INVALID values:
 //   - Enforcement groups (dispatch, skills, gates, structure, caps, paths): an invalid
 //     option fails THAT guard closed — the guard denies affected calls with a
-//     CONFIG-ERROR deny naming the option path. Never silent fallback, never silent
-//     disable. Sub-guard granularity (Phase 2): gates.memoryMandatePattern errors live
-//     in `memoryMandateProblems` (only the ext-6.1 fresh-dispatch check fails closed —
-//     the base skill/memory gate stays healthy); structure.stitch* errors live in
-//     `stitchProblems` (only the Stitch surface fails closed — fresh dispatches keep
-//     their own structure guard). The check cannot run ⇒ nothing passes unvalidated.
+//     CONFIG-ERROR deny naming the option path where the guard is reachable through
+//     configured surfaces. Never silent fallback, never silent disable. Sub-guard
+//     granularity: gates.memoryMandatePattern errors live in `memoryMandateProblems`
+//     (only the ext-6.1 fresh-dispatch check fails closed); structure.stitch* errors
+//     live in `stitchProblems` (only the Stitch surface fails closed). The broken
+//     guard's fail-closed SCOPE derives from DEFAULTS (post-flip: the broken group's
+//     own shaping option broken ⇒ nothing is covered — the guard is inert and the
+//     problem surfaces loudly; sub-option breakage inside a configured group still
+//     CONFIG-ERRORs at the guard's position).
 //   - structure.subagentProfile / structure.stitchProfile are CROSS-VALIDATED against
 //     the keys of structure.blocks: an unknown block key is a validation failure
 //     (CONFIG-ERROR naming the profile path).
 //   - Invalid cap ⇒ EFFECTIVE CAP 1 + CONFIG-ERROR deny (never "guard off").
-//   - Empty skills.mandatory / skills.orchestrator ⇒ valid + startup warning (owner
-//     ruling 2). Empty structure profiles / stitchPromptTools / mcpRequirements are
-//     valid + inert per §C (empty lists ruling); an empty gates.readTargets is valid +
-//     warned (the read prerequisite becomes inert — same vacuous-gate precedent).
+//   - Empty/absent options are VALID and produce NO problems (the inert default state
+//     is intended, not a misconfiguration — post-flip the pre-flight "empty = warned"
+//     rulings are superseded).
 //   - Unknown keys anywhere ⇒ warn (problem recorded) + ignore (owner ruling 4).
 //   - Cap disable representation: `null` means the guard is off (owner ruling 3).
 //   - A raw options value that is present but not a plain object cannot name a group, so
-//     EVERY enforcement group fails closed (the plugin must never be silently weaker).
-//   - PRESENTATION groups (messages, primer — Phase 3): an invalid entry (wrong type,
-//     empty string, unknown {var}, invalid primer mode, missing primer.text) falls back
-//     to the BUILT-IN DEFAULT and records a problem — wording problems must never brick
-//     enforcement (design §C: "a misconfigured enforcer enforces nothing reliably" does
-//     not extend to prose). A non-object messages/primer group is warn + ignored
-//     entirely. The per-template {var} sets map 1:1 to what the deny builders
-//     interpolate today; an unknown {var} in a configured template is caught at resolve
-//     time (it would otherwise leak into denies verbatim via fill()).
+//     EVERY enforcement group fails closed (problems recorded; effective caps 1).
+//   - PRESENTATION groups (messages, primer): an invalid entry (wrong type, unknown
+//     {var}, invalid primer mode, missing primer.text with an explicit mode) falls back
+//     to the BUILT-IN DEFAULT ("" — which renders as the plugin's hardcoded generic
+//     deny line / no primer) and records a problem. An EMPTY STRING is a VALID template
+//     (it means the generic deny line / no injection — the inert default). A non-object
+//     messages/primer group is warn + ignored entirely. The per-template {var} sets map
+//     1:1 to what the deny builders interpolate today; an unknown {var} in a configured
+//     template is caught at resolve time (it would otherwise leak into denies verbatim
+//     via fill()).
 //
-// Primer modes (Phase 3 brief; design §A #35 as amended — owner ruling 5 + the
-// fix-round-1 controller ruling on PR #12: the frozen default mode is "default"):
-//   "default" → DEFAULTS.primer.text verbatim (primer.text ignored) — the EFFECTIVE
-//               default mode: a bare primer.text is inert until replace/append is set
-//               explicitly (the shipped PRIMER stays pinned)
-//   "replace" → primer.text verbatim (DEFAULTS ignored)
-//   "append"  → DEFAULTS.primer.text + "\n\n" + primer.text
-//   Invalid mode or missing/invalid text in replace/append ⇒ default primer + problem.
-//   With NO options the resolved primer.text is DEFAULTS.primer.text verbatim
-//   (byte-identical behavior; DEFAULTS.primer.mode = "default" + its own text).
+// Primer modes (opt-in flip semantics — supersedes the fix-round-1 PR #12 ruling, whose
+// "shipped PRIMER stays pinned" rationale is void now that DEFAULTS.primer.text is ""):
+//   "default" → primer.text when configured (non-empty), else DEFAULTS.primer.text
+//               ("" — nothing injected). The default mode CONFIGURES the primer.
+//   "replace" → primer.text verbatim (explicit; text required)
+//   "append"  → DEFAULTS.primer.text + "\n\n" + primer.text when the built-in default is
+//               non-empty, else just primer.text (there is nothing to append to)
+//   Invalid mode, or replace/append without a usable text ⇒ default primer + problem.
+//   With NO options the resolved primer.text is "" and NOTHING is injected (zero
+//   problems); with the canonical fixture the injected primer is the fixture's PRIMER
+//   verbatim.
 //
 // FIXED trailer rule (owner ruling 4, design §E-8): the identical-loop deny is composed
 // WITHOUT the compliance trailer in the PLUGIN regardless of template content — the
@@ -59,15 +67,15 @@
 // embeds trailer text is a content bug, caught by parity/e2e tests).
 //
 // Every problem is a plain human-readable string. The union of all problems (errors and
-// warnings) is surfaced by the plugin as a system text part AFTER the PRIMER part
+// warnings) is surfaced by the plugin as a system text part AFTER the primer position
 // (session.context); the per-guard error subsets live on the resolved config and drive
 // the CONFIG-ERROR denies. Regex options are stored as SOURCE strings and validated by
 // compilation at resolve time (design §C: compile once at setup, never per call — the
 // plugin compiles the validated sources). Hand-rolled validation — zero new
 // dependencies (owner rule).
 //
-// With NO raw options (ctx.options absent — the file-discovery install and the whole
-// existing test suite) the resolver returns pure DEFAULTS values and zero problems.
+// With NO raw options (ctx.options absent) the resolver returns the all-off DEFAULTS
+// values and zero problems — the inert path tests/opt-in.test.ts pins.
 
 import { DEFAULTS, deepFreeze } from "./defaults.ts"
 
@@ -101,7 +109,7 @@ export type ResolvedConfig = {
     subagentProfile: string[]
     stitchProfile: string[]
     stitchPromptTools: string[]
-    stitchMinPrompt: number
+    stitchMinPrompt: number | null // null = length floor off (the check never fires)
     problems: string[] // blocks/profile cross-validation errors — the structure check fails closed (fresh + stitch)
     stitchProblems: string[] // stitchPromptTools/stitchMinPrompt errors — only the Stitch surface fails closed
   }
@@ -263,7 +271,10 @@ function capOption(raw: Record<string, unknown>, path: string, problems: string[
   return 1
 }
 
-function nonEmptyStringOption(
+// string option: undefined → default; "" is VALID (empty = the guard/rule is off — the
+// opt-in flip); any other non-string is invalid. Used for the knobs whose OFF
+// representation is "" (caps.chainOverrideMarker, paths.memoryIndex / memoryTree).
+function stringOption(
   raw: Record<string, unknown>,
   path: string,
   problems: string[],
@@ -272,15 +283,16 @@ function nonEmptyStringOption(
 ): string {
   const v = raw[keyOf(path)]
   if (v === undefined) return fallback
-  if (typeof v !== "string" || v.length === 0) {
-    problems.push(`${path} must be a non-empty string (got ${fmtGot(v)}); ${consequence}`)
+  if (typeof v !== "string") {
+    problems.push(`${path} must be a string (got ${fmtGot(v)}); ${consequence}`)
     return fallback
   }
   return v
 }
 
-// gates.exaSubstring (design §A #8): `null` removes the substring rule; a non-empty
-// string is the rule; anything else breaks the gate guard.
+// gates.exaSubstring (design §A #8, as amended by the opt-in flip): "" (the default)
+// removes the substring rule; null also removes it; a non-empty string is the rule;
+// anything else breaks the gate guard.
 function exaSubstringOption(
   raw: Record<string, unknown>,
   path: string,
@@ -291,8 +303,8 @@ function exaSubstringOption(
   const v = raw[keyOf(path)]
   if (v === undefined) return fallback
   if (v === null) return null
-  if (typeof v === "string" && v.length > 0) return v
-  problems.push(`${path} must be a non-empty string or null (got ${fmtGot(v)}); ${consequence}`)
+  if (typeof v === "string") return v
+  problems.push(`${path} must be a non-empty string, an empty string (off), or null (got ${fmtGot(v)}); ${consequence}`)
   return fallback
 }
 
@@ -358,8 +370,9 @@ function readTargetsOption(
 }
 
 // Regex-source option (design §A: regex options are pattern SOURCE strings compiled
-// with the original flags): must be a non-empty string that compiles; stored as source,
-// validated by compilation at resolve time. Invalid ⇒ the sub-guard fails closed.
+// with the original flags): "" is VALID and means the check is OFF (the opt-in flip);
+// a non-empty value must compile; stored as source, validated by compilation at resolve
+// time. Invalid ⇒ the sub-guard fails closed.
 function regexSourceOption(
   raw: Record<string, unknown>,
   path: string,
@@ -370,8 +383,9 @@ function regexSourceOption(
 ): string {
   const v = raw[keyOf(path)]
   if (v === undefined) return fallback
-  if (typeof v !== "string" || v.length === 0) {
-    problems.push(`${path} must be a non-empty regex source string (got ${fmtGot(v)}); ${consequence}`)
+  if (v === "") return ""
+  if (typeof v !== "string") {
+    problems.push(`${path} must be a non-empty regex source string, or an empty string (check off) (got ${fmtGot(v)}); ${consequence}`)
     return fallback
   }
   try {
@@ -458,26 +472,30 @@ function profileOption(
   return [...fallback]
 }
 
-// structure.stitchMinPrompt (design §A #16): a positive integer floor; anything else
-// breaks the Stitch surface sub-guard (fresh dispatches unaffected).
+// structure.stitchMinPrompt (design §A #16, as amended by the opt-in flip): a positive
+// integer floor, or null = the floor is off (the stitch check never fires); anything
+// else breaks the Stitch surface sub-guard (fresh dispatches unaffected).
 function positiveIntOption(
   raw: Record<string, unknown>,
   path: string,
   problems: string[],
-  fallback: number,
+  fallback: number | null,
   consequence: string,
-): number {
+): number | null {
   const v = raw[keyOf(path)]
   if (v === undefined) return fallback
+  if (v === null) return null
   if (typeof v === "number" && Number.isInteger(v) && v >= 1) return v
-  problems.push(`${path} must be a positive integer (got ${fmtGot(v)}); ${consequence}`)
+  problems.push(`${path} must be a positive integer or null (got ${fmtGot(v)}); ${consequence}`)
   return fallback
 }
 
-// Presentation-domain message template (Phase 3): a present value must be a non-empty
-// string whose {var} placeholders are all in the template's known set; otherwise the
-// DEFAULT template is kept and a fallback problem is recorded (presentation semantics —
-// wording problems never brick enforcement).
+// Presentation-domain message template (Phase 3, as amended by the opt-in flip): a
+// present value must be a STRING ("" is VALID — it means the guard renders the plugin's
+// hardcoded generic deny line / appends nothing) whose {var} placeholders are all in
+// the template's known set; a wrong type or an unknown {var} falls back to the DEFAULT
+// template with a recorded problem (presentation semantics — wording problems never
+// brick enforcement).
 function messageTemplateOption(
   raw: Record<string, unknown>,
   path: string,
@@ -487,8 +505,8 @@ function messageTemplateOption(
   const known = MESSAGE_TEMPLATE_VARS[keyOf(path)] ?? []
   const v = raw[keyOf(path)]
   if (v === undefined) return fallback
-  if (typeof v !== "string" || v.length === 0) {
-    problems.push(`${path} must be a non-empty string (got ${fmtGot(v)}); falling back to the default template (presentation warning)`)
+  if (typeof v !== "string") {
+    problems.push(`${path} must be a string (got ${fmtGot(v)}); falling back to the default template (presentation warning)`)
     return fallback
   }
   const unknown = [...new Set([...v.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).filter((k) => !known.includes(k)))]
@@ -524,15 +542,19 @@ function mcpSkillHintsOption(
   return { ...(v as Record<string, string>) }
 }
 
-// Primer group (Phase 3): resolve primer.mode/primer.text into the FINAL injected text.
-// Modes (phase-3 brief + fix-round-1 ruling): "default" → DEFAULTS.primer.text verbatim
-// (text ignored); "replace" → text verbatim; "append" → DEFAULTS.primer.text + "\n\n" +
-// text. The effective default mode is DEFAULTS.primer.mode ("default"), so a bare
-// primer.text is silently INERT — the injected primer changes only when mode is
-// explicitly set to replace/append. An EXPLICIT replace/append mode without a configured
-// text (or with an invalid one) ⇒ the default primer + a fallback problem (presentation
-// semantics); the default mode (implicit or explicit) ignores configured text silently —
-// the no-options resolution stays zero-problems byte-identical.
+// Primer group: resolve primer.mode/primer.text into the FINAL injected text.
+// Opt-in flip semantics (supersedes the fix-round-1 PR #12 ruling — there is no shipped
+// primer to pin anymore; DEFAULTS.primer.text is ""):
+//   "default" (implicit or explicit) → the configured text when present-and-valid, else
+//             DEFAULTS.primer.text ("") — the default mode CONFIGURES the primer; a bare
+//             primer.text is therefore EFFECTIVE now (zero problems).
+//   "replace" → text verbatim (explicit; a usable text is required — a present-but-
+//             invalid one is a fallback problem in every mode).
+//   "append"  → DEFAULTS.primer.text + "\n\n" + text when the built-in default is
+//             non-empty, else just text (nothing to append to).
+// Invalid mode, or replace/append without a usable text ⇒ the default primer (the
+// configured text in default mode, else "") + a fallback problem. With NO options the
+// resolution is text "" + zero problems → the plugin injects NOTHING.
 function resolvePrimer(
   raw: Record<string, unknown>,
   problems: string[],
@@ -558,24 +580,28 @@ function resolvePrimer(
     }
   }
 
-  // Text source: a valid configured string; a present-but-invalid value is a fallback
-  // problem in every mode (the user configured something unusable).
+  // Text source: a valid configured string; "" is VALID (it means no configured text /
+  // nothing injected); a present-but-invalid value is a fallback problem in every mode.
   let text: string | undefined
   if (raw.text !== undefined) {
-    if (typeof raw.text === "string" && raw.text.length > 0) {
+    if (typeof raw.text === "string") {
       text = raw.text
     } else {
       primerProblems.push(
-        `primer.text must be a non-empty string (got ${fmtGot(raw.text)}); falling back to the default primer (presentation warning)`,
+        `primer.text must be a string (got ${fmtGot(raw.text)}); falling back to the default primer (presentation warning)`,
       )
       return fallbackWith()
     }
   }
 
-  if (mode === "default") return { text: DEFAULTS.primer.text, problems: primerProblems } // configured text ignored
-  if (text !== undefined) {
+  if (mode === "default") {
+    // The default mode resolves to the configured text (may be ""), zero problems.
+    return { text: text ?? DEFAULTS.primer.text, problems: primerProblems }
+  }
+  if (text !== undefined && text !== "") {
+    const base = DEFAULTS.primer.text
     return mode === "append"
-      ? { text: DEFAULTS.primer.text + "\n\n" + text, problems: primerProblems }
+      ? { text: base === "" ? text : base + "\n\n" + text, problems: primerProblems }
       : { text, problems: primerProblems }
   }
   if (explicitMode) {
@@ -584,8 +610,8 @@ function resolvePrimer(
     )
     return fallbackWith()
   }
-  // Implicit default mode + no configured text = the option defaults pairing: zero
-  // problems, byte-identical injected text (the no-options parity path).
+  // Unreachable in practice (mode is only replace/append here when explicitMode), kept
+  // as the safe default-primer fallback.
   return { text: DEFAULTS.primer.text, problems: primerProblems }
 }
 
@@ -679,13 +705,9 @@ export function resolveOptions(raw: unknown): ResolveResult {
     DEFAULTS.skills.orchestrator,
     "dispatch preflight failing closed",
   )
-  // Owner ruling 2: empty skill lists are VALID + startup warning (honored, not broken).
-  if (mandatory.length === 0) {
-    problems.push("skills.mandatory is empty — the base skill gate is inert for skills (warning)")
-  }
-  if (orchestrator.length === 0) {
-    problems.push("skills.orchestrator is empty — the dispatch preflight is inert (warning)")
-  }
+  // Empty skill lists are VALID and produce NO problems (opt-in flip: the inert default
+  // state is intended, not a misconfiguration — the pre-flip "empty = warned" ruling is
+  // superseded).
   const skills: ResolvedConfig["skills"] = { mandatory, orchestrator, problems: skillsProblems }
 
   // --- gates group ---
@@ -707,11 +729,8 @@ export function resolveOptions(raw: unknown): ResolveResult {
     DEFAULTS.gates.readTargets,
     "skill gate failing closed",
   )
-  // Empty readTargets ⇒ valid + startup warning (the read prerequisite is inert — the
-  // vacuous-gate precedent of the empty-skills ruling; never silently weaker).
-  if (readTargets.length === 0) {
-    problems.push("gates.readTargets is empty — the read prerequisite is inert (warning)")
-  }
+  // Empty readTargets ⇒ VALID, no warning (opt-in flip: the read prerequisite is off —
+  // the intended default state, superseding the pre-flip vacuous-gate warning ruling).
   const gates: ResolvedConfig["gates"] = {
     tools: stringArrayOption(g, "gates.tools", gatesProblems, DEFAULTS.gates.tools, "skill gate failing closed"),
     exaSubstring: exaSubstringOption(
@@ -823,14 +842,14 @@ export function resolveOptions(raw: unknown): ResolveResult {
   const p = pathsOK && isPlainObject(pathsRaw) ? pathsRaw : {}
   if (pathsOK && "paths" in o) scanUnknownKeys("paths", p, problems)
   const paths: ResolvedConfig["paths"] = {
-    memoryIndex: nonEmptyStringOption(
+    memoryIndex: stringOption(
       p,
       "paths.memoryIndex",
       pathsProblems,
       DEFAULTS.paths.memoryIndex,
       "memory-overwrite guard failing closed",
     ),
-    memoryTree: nonEmptyStringOption(
+    memoryTree: stringOption(
       p,
       "paths.memoryTree",
       pathsProblems,
@@ -857,7 +876,7 @@ export function resolveOptions(raw: unknown): ResolveResult {
   }
   const c = capsOK && isPlainObject(capsRaw) ? capsRaw : {}
   if (capsOK && "caps" in o) scanUnknownKeys("caps", c, problems)
-  const marker = nonEmptyStringOption(
+  const marker = stringOption(
     c,
     "caps.chainOverrideMarker",
     markerProblems,
@@ -973,6 +992,25 @@ export function resolveOptions(raw: unknown): ResolveResult {
   const prm = primerOK && isPlainObject(primerRaw) ? primerRaw : {}
   if (primerOK && "primer" in o) scanUnknownKeys("primer", prm, problems)
   const primer = resolvePrimer(prm, problems, !primerOK)
+
+  // Surface EVERY problem (enforcement-group errors included) in the top-level list —
+  // the plugin renders it as the config-problems system part (RULES §6.3). Pre-flip the
+  // enforcement-group pools surfaced only via their CONFIG-ERROR denies; post-flip a
+  // broken group whose shaping option is itself broken covers nothing (its scope
+  // derives from the empty defaults), so the system part is the ONLY surfacing channel
+  // it has — silent degradation is not acceptable.
+  problems.push(
+    ...dispatch.problems,
+    ...skills.problems,
+    ...gates.problems,
+    ...gates.memoryMandateProblems,
+    ...structure.problems,
+    ...structure.stitchProblems,
+    ...paths.problems,
+    ...caps.identicalProblems,
+    ...caps.chainMaxProblems,
+    ...caps.markerProblems,
+  )
 
   // Non-object raw: every enforcement guard fails closed (see totalBreak above), and the
   // clause itself is part of the surfaced problem list. The caps reflect the effective

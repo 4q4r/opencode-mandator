@@ -22,6 +22,13 @@
 
 ## 📖 What is enforced
 
+**Opt-in enforcement — an unconfigured plugin enforces nothing.** The built-in defaults
+are empty: with no plugin options the plugin is completely INERT (no gates, no denies,
+no primer injection, no description hint). Configure it via `opencode.json` plugin
+options (see [`docs/CONFIG-EXAMPLES.md`](docs/CONFIG-EXAMPLES.md); canonical setup:
+[`tests/fixtures/mandator-setup.json`](tests/fixtures/mandator-setup.json)). The table
+below describes the configured (canonical) enforcement.
+
 Twelve deterministic layers, enforced in-process by an OpenCode v2 plugin
 (`@opencode/plugin` `Plugin.define`). Full normative spec: [`docs/RULES.md`](docs/RULES.md).
 
