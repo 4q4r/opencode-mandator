@@ -1,22 +1,49 @@
-// tests/config.test.ts — Flexibility Phase 1: resolveOptions + the 11 wired enforcement
-// knobs (task-phase1-brief.md). Contract:
+// tests/config.test.ts — resolveOptions + the wired knobs. Contract:
 //   - resolveOptions(raw) merges raw ctx.options over DEFAULTS with the owner-approved
 //     HYBRID failure semantics (design §C(c)): an invalid option in an enforcement group
 //     fails THAT guard closed with a CONFIG-ERROR deny naming the option path; invalid
-//     caps mean effective cap 1; empty skills lists are valid + warning; unknown keys are
-//     warn + ignore (owner ruling 2026-11-07).
-//   - With NO options the plugin resolves to pure defaults (the existing 80-test suite
-//     exercises exactly this path, untouched).
+//     caps mean effective cap 1; unknown keys are warn + ignore.
+//   - OPT-IN FLIP (owner decision 2026-11-07): empty/absent options are VALID and make
+//     the plugin completely INERT (no gates, no denies, no primer, no hint, zero
+//     problems) — DEFAULTS is the all-off config. Enforcement exists only via explicit
+//     configuration: the behavior tests below run against the CANONICAL SETUP FIXTURE
+//     (tests/fixtures/mandator-setup.json — the owner setup as options) merged with
+//     per-knob overrides via withSetup().
 // This file has its own module state (bun isolates per test file): the harness calls
 // plugin.setup(ctx) per test with ctx.options set, so every knob test pins a real
 // deny/allow behavior through the hooks. Session IDs are unique per test (the per-session
 // Maps live at module scope and outlive individual setup() calls).
 import { describe, expect, test, beforeEach, afterEach } from "bun:test"
 import os from "node:os"
+import { readFileSync } from "node:fs"
 import plugin, { _testStat } from "../src/dispatch-policy.ts"
 import { DEFAULTS, deepFreeze } from "../src/defaults.ts"
 import { resolveOptions } from "../src/config.ts"
 import * as pkg from "../plugin-package/index.ts"
+
+// The canonical owner setup (the pre-flip defaults as options).
+const SETUP = JSON.parse(
+  readFileSync(new URL("./fixtures/mandator-setup.json", import.meta.url), "utf8"),
+) as Record<string, unknown>
+
+// Deep-merge a per-knob override INTO the canonical setup: plain objects merge
+// recursively (group → key → nested), arrays and primitives replace. This keeps the
+// knob tests meaningful post-flip: one knob changes, the rest of the owner setup stays.
+function withSetup(override: Record<string, unknown>): Record<string, unknown> {
+  const merge = (base: Record<string, unknown>, over: Record<string, unknown>): Record<string, unknown> => {
+    const out: Record<string, unknown> = { ...base }
+    for (const key of Object.keys(over)) {
+      const b = out[key]
+      const v = over[key]
+      out[key] =
+        v !== null && typeof v === "object" && !Array.isArray(v) && b !== null && typeof b === "object" && !Array.isArray(b)
+          ? merge(b as Record<string, unknown>, v as Record<string, unknown>)
+          : v
+    }
+    return out
+  }
+  return merge(SETUP, override)
+}
 
 // --- harness (mirrors tests/dispatch-policy.test.ts, plus an options plumb) ---
 const hooks: Record<string, (event: any) => any> = {}
@@ -38,7 +65,14 @@ const ctx: any = {
 
 let transformed: Record<string, { description: string }> | null = null
 
-const setupWith = async (options: unknown) => {
+// setupWith(override): merge a per-knob override INTO the canonical fixture ({} = the
+// full owner setup) and (re)set up the plugin. setupRaw(options): exact options, no
+// merge — used where the test pins the raw no-options/default path itself.
+const setupWith = async (override: Record<string, unknown> = {}) => {
+  ctx.options = withSetup(override)
+  await plugin.setup(ctx)
+}
+const setupRaw = async (options: unknown) => {
   ctx.options = options
   await plugin.setup(ctx)
 }
@@ -91,26 +125,45 @@ const continuation = (sid: string, prompt: string, childID: string) =>
 
 // --- resolveOptions: pure resolution semantics ---
 describe("config — resolveOptions resolution semantics", () => {
-  test("no raw (undefined) → pure DEFAULTS values, zero problems", () => {
+  test("no raw (undefined) → the all-off DEFAULTS, zero problems (inert default)", () => {
     const { resolved, problems } = resolveOptions(undefined)
     expect(problems).toEqual([])
-    expect(resolved.dispatch.tools).toEqual(DEFAULTS.dispatch.tools)
-    expect(resolved.dispatch.forbiddenAgents).toEqual(DEFAULTS.dispatch.forbiddenAgents)
-    expect(resolved.dispatch.requireBackground).toBe(true)
-    expect(resolved.dispatch.requireAgent).toBe(true)
-    expect(resolved.skills.mandatory).toEqual(DEFAULTS.skills.mandatory)
-    expect(resolved.skills.orchestrator).toEqual(DEFAULTS.skills.orchestrator)
-    expect(resolved.gates.tools).toEqual(DEFAULTS.gates.tools)
-    expect(resolved.gates.exaSubstring).toBe("exa")
-    expect(resolved.caps.identicalMax).toBe(4)
-    expect(resolved.caps.chainMax).toBe(6)
-    expect(resolved.caps.chainOverrideMarker).toBe("[chain-cap-override]")
+    expect(resolved.dispatch.tools).toEqual([])
+    expect(resolved.dispatch.forbiddenAgents).toEqual([])
+    expect(resolved.dispatch.requireBackground).toBe(false)
+    expect(resolved.dispatch.requireAgent).toBe(false)
+    expect(resolved.skills.mandatory).toEqual([])
+    expect(resolved.skills.orchestrator).toEqual([])
+    expect(resolved.gates.tools).toEqual([])
+    expect(resolved.gates.exaSubstring).toBe("") // empty string = rule off
+    expect(resolved.gates.mcpRequirements).toEqual([])
+    expect(resolved.gates.readTargets).toEqual([])
+    expect(resolved.gates.memoryMandatePattern).toBe("") // empty = check off
+    expect(resolved.structure.blocks).toEqual({})
+    expect(resolved.structure.subagentProfile).toEqual([])
+    expect(resolved.structure.stitchPromptTools).toEqual([])
+    expect(resolved.structure.stitchMinPrompt).toBeNull() // null = floor off
+    expect(resolved.caps.identicalMax).toBeNull()
+    expect(resolved.caps.chainMax).toBeNull()
+    expect(resolved.caps.chainOverrideMarker).toBe("") // empty = no escape marker accepted
+    expect(resolved.paths.memoryIndex).toBe("")
+    expect(resolved.paths.memoryTree).toBe("")
+    expect(resolved.messages.complianceWarning).toBe("")
+    expect(resolved.messages.mcpSkillHints).toEqual({})
+    expect(resolved.messages.descriptionHint).toBe("")
+    expect(resolved.primer.text).toBe("") // nothing injected
     expect(resolved.dispatch.problems).toEqual([])
     expect(resolved.skills.problems).toEqual([])
     expect(resolved.gates.problems).toEqual([])
+    expect(resolved.gates.memoryMandateProblems).toEqual([])
+    expect(resolved.structure.problems).toEqual([])
+    expect(resolved.structure.stitchProblems).toEqual([])
+    expect(resolved.paths.problems).toEqual([])
     expect(resolved.caps.identicalProblems).toEqual([])
     expect(resolved.caps.chainMaxProblems).toEqual([])
     expect(resolved.caps.markerProblems).toEqual([])
+    expect(resolved.messages.problems).toEqual([])
+    expect(resolved.primer.problems).toEqual([])
   })
 
   test("empty object raw → same as absent", () => {
@@ -124,9 +177,9 @@ describe("config — resolveOptions resolution semantics", () => {
     const { resolved, problems } = resolveOptions({ caps: { chainMax: 10 } })
     expect(problems).toEqual([])
     expect(resolved.caps.chainMax).toBe(10)
-    expect(resolved.caps.identicalMax).toBe(4) // untouched knob stays at default
-    expect(resolved.caps.chainOverrideMarker).toBe("[chain-cap-override]")
-    expect(resolved.dispatch.requireBackground).toBe(true)
+    expect(resolved.caps.identicalMax).toBeNull() // untouched knob stays at its (off) default
+    expect(resolved.caps.chainOverrideMarker).toBe("")
+    expect(resolved.dispatch.requireBackground).toBe(false)
   })
 
   test("resolved config is deep-frozen", () => {
@@ -156,13 +209,34 @@ describe("config — resolveOptions resolution semantics", () => {
     expect(resolved.primer.text).toBe(DEFAULTS.primer.text)
   })
 
-  test("empty skills lists are valid + warned, and honored", () => {
+  test("empty skills lists are VALID with NO problems and honored (opt-in flip: inert default is intended)", () => {
     const { resolved, problems } = resolveOptions({ skills: { mandatory: [], orchestrator: [] } })
-    expect(problems).toContain("skills.mandatory is empty — the base skill gate is inert for skills (warning)")
-    expect(problems).toContain("skills.orchestrator is empty — the dispatch preflight is inert (warning)")
+    expect(problems).toEqual([]) // the pre-flip "empty = warned" rulings are superseded
     expect(resolved.skills.mandatory).toEqual([])
     expect(resolved.skills.orchestrator).toEqual([])
-    expect(resolved.skills.problems).toEqual([]) // warnings do NOT break the guard
+    expect(resolved.skills.problems).toEqual([])
+  })
+
+  test("empty strings are the valid OFF representation across groups (opt-in flip)", () => {
+    const { resolved, problems } = resolveOptions({
+      gates: { exaSubstring: "", memoryMandatePattern: "" },
+      caps: { chainOverrideMarker: "" },
+      paths: { memoryIndex: "", memoryTree: "" },
+      messages: { generalBan: "", gateMissing: "" },
+    })
+    expect(problems).toEqual([])
+    expect(resolved.gates.exaSubstring).toBe("")
+    expect(resolved.gates.memoryMandatePattern).toBe("")
+    expect(resolved.caps.chainOverrideMarker).toBe("")
+    expect(resolved.paths.memoryIndex).toBe("")
+    expect(resolved.paths.memoryTree).toBe("")
+    expect(resolved.messages.generalBan).toBe("") // valid: renders the generic deny line
+    expect(resolved.messages.gateMissing).toBe("")
+    expect(resolved.messages.problems).toEqual([])
+    expect(resolved.gates.problems).toEqual([])
+    expect(resolved.gates.memoryMandateProblems).toEqual([])
+    expect(resolved.caps.markerProblems).toEqual([])
+    expect(resolved.paths.problems).toEqual([])
   })
 
   test("non-object raw → enforcement fails closed (every group broken, effective caps 1)", () => {
@@ -182,11 +256,11 @@ describe("config — resolveOptions resolution semantics", () => {
   })
 })
 
-// --- absent options through the plugin: the defaults path the existing 80 tests use ---
-describe("config — absent options = pure defaults (parity path)", () => {
-  test("setup without options → normal gate deny, no problems part, PRIMER byte-identical", async () => {
-    await setupWith(undefined)
-    const msg = await denyMsg({ tool: "shell", sessionID: "sess-cfg-parity", input: {} })
+// --- the canonical fixture through the plugin: the old defaults path, as options ---
+describe("config — the canonical fixture as options (the old defaults path)", () => {
+  test("setup with the fixture → normal gate deny, no problems part, PRIMER from the fixture", async () => {
+    await setupRaw(SETUP)
+    const msg = await denyMsg({ tool: "shell", sessionID: "sess-cfg-fixture", input: {} })
     expect(msg).not.toBeNull()
     expect(msg!).toContain('skill "brainstorming"')
     expect(msg!).toContain('skill "context7-mcp"')
@@ -195,7 +269,7 @@ describe("config — absent options = pure defaults (parity path)", () => {
     const sys: any[] = []
     await hooks["session.context"]({ system: sys, messages: [] })
     expect(sys.length).toBe(1) // PRIMER only — no config-problems part
-    expect(sys[0]!.text).toBe(DEFAULTS.primer.text) // PRIMER text unchanged
+    expect(sys[0]!.text).toBe((SETUP.primer as { text: string }).text) // the fixture PRIMER, verbatim
   })
 })
 
@@ -386,12 +460,12 @@ describe("config — per-knob override behavior", () => {
     const sys: any[] = []
     await hooks["session.context"]({ system: sys, messages: [] })
     expect(sys.length).toBe(2)
-    expect(sys[0]!.text).toBe(DEFAULTS.primer.text) // PRIMER part unchanged, first
+    expect(sys[0]!.text).toBe((SETUP.primer as { text: string }).text) // PRIMER part unchanged, first
     expect(sys[1]!.type).toBe("text")
     expect(sys[1]!.text).toContain("dispatch-policy config problems:")
     expect(sys[1]!.text).toContain(`unknown option key "dispatch.toolz" ignored (warning)`)
-    expect(sys[1]!.text).toContain("skills.mandatory is empty")
-    // clean options → exactly one part again
+    expect(sys[1]!.text).not.toContain("skills.mandatory is empty") // no empty-list warnings post-flip
+    // clean options (the full fixture) → exactly one part again
     await setupWith({})
     const clean: any[] = []
     await hooks["session.context"]({ system: clean, messages: [] })
@@ -400,17 +474,26 @@ describe("config — per-knob override behavior", () => {
 })
 
 // --- invalid input per group: hybrid failure semantics with teeth ---
+// Post-flip broken-group semantics: a broken group whose SHAPING option is itself
+// broken (dispatch.tools / gates.tools / stitch tools / paths) covers nothing — the
+// guard is inert and the problem surfaces via the config-problems part. Sub-option
+// breakage inside a configured group still CONFIG-ERRORs at the guard's position.
 describe("config — invalid options fail closed per guard (CONFIG-ERROR denies)", () => {
-  test("dispatch.requireBackground invalid → dispatch guard denies with CONFIG-ERROR naming the path; other guards unaffected", async () => {
+  test("dispatch.requireBackground invalid → dispatch guard inert + problem recorded (shaping group broken, scope derives from the empty defaults)", async () => {
     await setupWith({ dispatch: { requireBackground: "yes" } })
+    // the dispatch scope itself is broken → the dispatch guards cover nothing; the
+    // compliant fresh dispatch passes (the bans/structure/breaker never run)
     complyAll("sess-cfg-badbg")
     const m = await freshDispatch("sess-cfg-badbg", "code-reviewer", GOOD_PROMPT)
-    expect(m).not.toBeNull()
-    expect(m!).toContain("[config-error]")
-    expect(m!).toContain("dispatch.requireBackground")
-    expect(m!).toContain(`got "yes"`)
-    expect(m!).toContain("failing closed")
-    // the gate is a different guard: a compliant shell call still passes
+    expect(m).toBeNull()
+    // the failure is LOUD: the config-problems part names the path
+    const sys: any[] = []
+    await hooks["session.context"]({ system: sys, messages: [] })
+    expect(sys.length).toBe(2)
+    expect(sys[1]!.text).toContain("dispatch.requireBackground")
+    expect(sys[1]!.text).toContain(`got "yes"`)
+    expect(sys[1]!.text).toContain("failing closed")
+    // the gate is a different guard and stays healthy
     const mShell = await denyMsg({ tool: "shell", sessionID: "sess-cfg-badbg-shell", input: {} })
     complyAll("sess-cfg-badbg-shell")
     const mShellOk = await denyMsg({ tool: "shell", sessionID: "sess-cfg-badbg-shell", input: {} })
@@ -433,15 +516,20 @@ describe("config — invalid options fail closed per guard (CONFIG-ERROR denies)
     expect(mGeneral!).not.toContain("config-error")
   })
 
-  test("gates.tools invalid → formerly-gated calls deny with CONFIG-ERROR; ungated tools pass", async () => {
+  test("gates.tools invalid → the gate surface is broken (inert + loud problem); never-gated tools pass", async () => {
     await setupWith({ gates: { tools: "shell" } })
+    // the gated set is broken → nothing is gated; formerly-gated calls pass
     const mEdit = await denyMsg({ tool: "edit", sessionID: "sess-cfg-badgt", input: {} })
-    expect(mEdit).not.toBeNull()
-    expect(mEdit!).toContain("[config-error]")
-    expect(mEdit!).toContain("gates.tools")
-    expect(mEdit!).toContain(`got "shell"`)
+    expect(mEdit).toBeNull()
     const mGrep = await denyMsg({ tool: "grep", sessionID: "sess-cfg-badgt2", input: {} })
-    expect(mGrep).toBeNull() // never gated, unaffected
+    expect(mGrep).toBeNull()
+    // the failure is LOUD: the config-problems part names gates.tools
+    const sys: any[] = []
+    await hooks["session.context"]({ system: sys, messages: [] })
+    expect(sys.length).toBe(2)
+    expect(sys[1]!.text).toContain("gates.tools")
+    expect(sys[1]!.text).toContain(`got "shell"`)
+    expect(sys[1]!.text).toContain("failing closed")
   })
 
   test("caps.identicalMax invalid → effective cap 1 + CONFIG-ERROR deny on the fresh path; chain guard unaffected", async () => {
@@ -471,8 +559,8 @@ describe("config — invalid options fail closed per guard (CONFIG-ERROR denies)
     expect(m2!).toContain("effective cap 1")
   })
 
-  test("caps.chainOverrideMarker invalid → over-cap continuations CONFIG-ERROR (escape cannot be honored); under-cap passes", async () => {
-    await setupWith({ caps: { chainMax: 2, chainOverrideMarker: "" } })
+  test("caps.chainOverrideMarker invalid (non-string) → over-cap continuations CONFIG-ERROR (escape cannot be honored); under-cap passes", async () => {
+    await setupWith({ caps: { chainMax: 2, chainOverrideMarker: 42 } })
     const sid = "sess-cfg-badmarker"
     complyAll(sid)
     expect(await continuation(sid, "step 1", "ses_child_badmarker")).toBeNull()
@@ -481,14 +569,28 @@ describe("config — invalid options fail closed per guard (CONFIG-ERROR denies)
     expect(m3).not.toBeNull()
     expect(m3!).toContain("[config-error]")
     expect(m3!).toContain("caps.chainOverrideMarker")
-    expect(m3!).toContain(`got ""`)
+    expect(m3!).toContain("got 42")
   })
 
-  test("unknown keys are warn+ignore at runtime: defaults keep enforcing, warnings recorded", async () => {
+  test("caps.chainOverrideMarker '' (VALID) → NO escape marker is accepted: over-cap continuations deny even with the default marker text", async () => {
+    await setupWith({ caps: { chainMax: 2, chainOverrideMarker: "" } })
+    const sid = "sess-cfg-emptymarker"
+    complyAll(sid)
+    for (let i = 1; i <= 2; i++) {
+      expect(await continuation(sid, `step ${i}`, "ses_child_emptymarker")).toBeNull()
+    }
+    const m3 = await continuation(sid, "step 3 [chain-cap-override] owner approved", "ses_child_emptymarker")
+    expect(m3).not.toBeNull()
+    expect(m3!).toContain("continuation chain reached 3")
+    expect(m3!).toContain("cap 2")
+    expect(m3!).not.toContain("config-error")
+  })
+
+  test("unknown keys are warn+ignore at runtime: the fixture config keeps enforcing, warnings recorded", async () => {
     await setupWith({ dispatch: { toolz: 1 }, bogus: true })
     const mGeneral = await denyMsg({ tool: "subagent", sessionID: "sess-cfg-unknown", input: { agent: "general", background: true } })
     expect(mGeneral).not.toBeNull()
-    expect(mGeneral!).toContain("FORBIDDEN") // default enforcement intact
+    expect(mGeneral!).toContain("FORBIDDEN") // fixture enforcement intact
     const sys: any[] = []
     await hooks["session.context"]({ system: sys, messages: [] })
     expect(sys.length).toBe(2)
@@ -558,23 +660,23 @@ const BAD_STITCH_PROMPT =
   "Keep it minimal and modern, dark theme, rounded corners, subtle animations everywhere."
 
 describe("config Phase 2 — resolveOptions: gates/structure/paths resolution semantics", () => {
-  test("no raw → new Phase-2 fields resolve to pure DEFAULTS values, zero problems", () => {
+  test("no raw → new Phase-2 fields resolve to the all-off DEFAULTS, zero problems", () => {
     const { resolved, problems } = resolveOptions(undefined)
     expect(problems).toEqual([])
-    expect(resolved.gates.mcpRequirements).toEqual(DEFAULTS.gates.mcpRequirements)
-    expect(resolved.gates.readTargets).toEqual(DEFAULTS.gates.readTargets)
-    expect(resolved.gates.memoryMandatePattern).toBe(DEFAULTS.gates.memoryMandatePattern)
+    expect(resolved.gates.mcpRequirements).toEqual([])
+    expect(resolved.gates.readTargets).toEqual([])
+    expect(resolved.gates.memoryMandatePattern).toBe("")
     expect(resolved.gates.problems).toEqual([])
     expect(resolved.gates.memoryMandateProblems).toEqual([])
-    expect(resolved.structure.blocks).toEqual(DEFAULTS.structure.blocks)
-    expect(resolved.structure.subagentProfile).toEqual(DEFAULTS.structure.subagentProfile)
-    expect(resolved.structure.stitchProfile).toEqual(DEFAULTS.structure.stitchProfile)
-    expect(resolved.structure.stitchPromptTools).toEqual(DEFAULTS.structure.stitchPromptTools)
-    expect(resolved.structure.stitchMinPrompt).toBe(120)
+    expect(resolved.structure.blocks).toEqual({})
+    expect(resolved.structure.subagentProfile).toEqual([])
+    expect(resolved.structure.stitchProfile).toEqual([])
+    expect(resolved.structure.stitchPromptTools).toEqual([])
+    expect(resolved.structure.stitchMinPrompt).toBeNull()
     expect(resolved.structure.problems).toEqual([])
     expect(resolved.structure.stitchProblems).toEqual([])
-    expect(resolved.paths.memoryIndex).toBe(DEFAULTS.paths.memoryIndex)
-    expect(resolved.paths.memoryTree).toBe(DEFAULTS.paths.memoryTree)
+    expect(resolved.paths.memoryIndex).toBe("")
+    expect(resolved.paths.memoryTree).toBe("")
     expect(resolved.paths.problems).toEqual([])
   })
 
@@ -583,7 +685,7 @@ describe("config Phase 2 — resolveOptions: gates/structure/paths resolution se
     expect(problems).toEqual([])
     expect(resolved.structure.blocks).toEqual(RU_BLOCKS)
     expect(resolved.structure.blocks.role?.name).toBe("Роль") // custom vocabulary kept
-    expect(resolved.structure.subagentProfile).toEqual(DEFAULTS.structure.subagentProfile) // untouched knob
+    expect(resolved.structure.subagentProfile).toEqual(DEFAULTS.structure.subagentProfile) // untouched knob (off)
     expect(resolved.structure.problems).toEqual([])
   })
 
@@ -598,10 +700,8 @@ describe("config Phase 2 — resolveOptions: gates/structure/paths resolution se
     expect(resolved.gates.mcpRequirements).toEqual(mcp)
     expect(resolved.gates.readTargets).toEqual(targets)
     expect(resolved.gates.problems).toEqual([])
-    expect(DEFAULTS.gates.mcpRequirements).toEqual([
-      { prefix: "context7", skill: "context7-mcp" },
-      { prefix: "adb_mcp", skill: "adb-mcp" },
-    ]) // defaults untouched
+    expect(DEFAULTS.gates.mcpRequirements).toEqual([]) // the off default is untouched
+    expect(DEFAULTS.gates.readTargets).toEqual([])
   })
 
   test("invalid regex source in blocks → problem names structure.blocks.<key>.pattern; blocks fall back to defaults", () => {
@@ -677,14 +777,14 @@ describe("config Phase 2 — resolveOptions: gates/structure/paths resolution se
     expect(resolved.gates.memoryMandatePattern).toBe(DEFAULTS.gates.memoryMandatePattern)
   })
 
-  test("stitch knobs: stitchMinPrompt must be a positive integer; stitchPromptTools must be a string[]", () => {
+  test("stitch knobs: stitchMinPrompt must be a positive integer or null; stitchPromptTools must be a string[]", () => {
     const a = resolveOptions({ structure: { stitchMinPrompt: 0 } })
     expect(
       a.resolved.structure.stitchProblems.some((p) =>
         p.startsWith("structure.stitchMinPrompt must be a positive integer"),
       ),
     ).toBeTrue()
-    expect(a.resolved.structure.stitchMinPrompt).toBe(120)
+    expect(a.resolved.structure.stitchMinPrompt).toBeNull() // fallback = the off default
     expect(a.resolved.structure.problems).toEqual([]) // fresh-dispatch structure guard unaffected
     const b = resolveOptions({ structure: { stitchPromptTools: [42] } })
     expect(
@@ -694,12 +794,12 @@ describe("config Phase 2 — resolveOptions: gates/structure/paths resolution se
     ).toBeTrue()
   })
 
-  test("paths: non-empty strings; invalid → paths.problems + default fallback; unknown keys warn+ignore", () => {
-    const a = resolveOptions({ paths: { memoryTree: "" } })
+  test("paths: strings (empty = guard off, valid); invalid → paths.problems + default fallback; unknown keys warn+ignore", () => {
+    const a = resolveOptions({ paths: { memoryTree: 42 } })
     expect(
-      a.resolved.paths.problems.some((p) => p.startsWith("paths.memoryTree must be a non-empty string")),
+      a.resolved.paths.problems.some((p) => p.startsWith("paths.memoryTree must be a string")),
     ).toBeTrue()
-    expect(a.resolved.paths.memoryTree).toBe(DEFAULTS.paths.memoryTree)
+    expect(a.resolved.paths.memoryTree).toBe(DEFAULTS.paths.memoryTree) // "" (off)
     const b = resolveOptions({ structure: { blockz: 1 }, paths: { treez: 1 } })
     expect(b.problems).toContain(`unknown option key "structure.blockz" ignored (warning)`)
     expect(b.problems).toContain(`unknown option key "paths.treez" ignored (warning)`)
@@ -707,13 +807,13 @@ describe("config Phase 2 — resolveOptions: gates/structure/paths resolution se
     expect(b.resolved.paths.problems).toEqual([])
   })
 
-  test("empty profiles are valid and inert (no problems); empty readTargets is valid + warned", () => {
+  test("empty profiles / stitch tools / mcpRequirements / readTargets are valid + inert with NO problems (opt-in flip)", () => {
     const a = resolveOptions({ structure: { subagentProfile: [], stitchProfile: [] } })
     expect(a.problems).toEqual([])
     expect(a.resolved.structure.problems).toEqual([])
     const b = resolveOptions({ gates: { readTargets: [] } })
-    expect(b.problems).toContain("gates.readTargets is empty — the read prerequisite is inert (warning)")
-    expect(b.resolved.gates.problems).toEqual([]) // warning does NOT break the guard
+    expect(b.problems).toEqual([]) // the pre-flip "empty = warned" ruling is superseded
+    expect(b.resolved.gates.problems).toEqual([])
   })
 
   test("resolved config is deep-frozen including the new groups", () => {
@@ -968,23 +1068,28 @@ describe("config Phase 2 — invalid options fail closed per guard (CONFIG-ERROR
     expect(m!).toContain('unknown block key "tasks"')
   })
 
-  test("gates.readTargets broken → gated calls deny with CONFIG-ERROR naming the path", async () => {
+  test("gates.readTargets broken → the gate surface is broken (inert + loud problem, shaping group broken)", async () => {
     await setupWith({ gates: { readTargets: "MEMORY.md" } })
+    // the whole gates group is broken → nothing is gated; gated calls pass
     const m = await denyMsg({ tool: "shell", sessionID: "sess-p2-badtargets", input: {} })
-    expect(m).not.toBeNull()
-    expect(m!).toContain("[config-error]")
-    expect(m!).toContain("gates.readTargets")
-    expect(m!).toContain(`got "MEMORY.md"`)
+    expect(m).toBeNull()
+    const sys: any[] = []
+    await hooks["session.context"]({ system: sys, messages: [] })
+    expect(sys.length).toBe(2)
+    expect(sys[1]!.text).toContain("gates.readTargets")
+    expect(sys[1]!.text).toContain(`got "MEMORY.md"`)
   })
 
-  test("gates.mcpRequirements broken → gated calls deny with CONFIG-ERROR naming the path", async () => {
+  test("gates.mcpRequirements broken → the gate surface is broken (inert + loud problem, shaping group broken)", async () => {
     await setupWith({ gates: { mcpRequirements: [{ prefix: "acme_" }] } }) // missing skill field
-    const sid = "sess-p2-badmcp"
-    complyAll(sid) // even a base-complete session cannot pass: prerequisites are unreadable
-    const m = await denyMsg({ tool: "shell", sessionID: sid, input: {} })
-    expect(m).not.toBeNull()
-    expect(m!).toContain("[config-error]")
-    expect(m!).toContain("gates.mcpRequirements")
+    // the whole gates group is broken → the gate never fires, even at zero state
+    const m = await denyMsg({ tool: "shell", sessionID: "sess-p2-badmcp", input: {} })
+    expect(m).toBeNull()
+    const sys: any[] = []
+    await hooks["session.context"]({ system: sys, messages: [] })
+    expect(sys.length).toBe(2)
+    expect(sys[1]!.text).toContain("gates.mcpRequirements")
+    expect(sys[1]!.text).toContain("must be an array of {prefix, skill}")
   })
 
   test("gates.memoryMandatePattern broken regex → fresh dispatch CONFIG-ERROR at the mandate position only", async () => {
@@ -1010,62 +1115,94 @@ describe("config Phase 2 — invalid options fail closed per guard (CONFIG-ERROR
     expect(m!).toContain("gates.memoryMandatePattern")
   })
 
-  test("stitch knobs broken → the stitch call CONFIG-ERRORs; fresh dispatches are unaffected", async () => {
+  test("stitch knobs broken → the stitch surface is inert + loud problem; fresh dispatches are unaffected", async () => {
     await setupWith({ structure: { stitchMinPrompt: 0 } })
+    // the stitch scope is broken (stitch knobs pool) → the surface covers nothing
     const mStitch = await denyMsg({
       tool: "stitch_generate_screen_from_text",
       sessionID: "sess-p2-badfloor",
       input: { prompt: BAD_STITCH_PROMPT },
     })
-    expect(mStitch).not.toBeNull()
-    expect(mStitch!).toContain("[config-error]")
-    expect(mStitch!).toContain("structure.stitchMinPrompt")
+    expect(mStitch).toBeNull()
+    const sys: any[] = []
+    await hooks["session.context"]({ system: sys, messages: [] })
+    expect(sys.length).toBe(2)
+    expect(sys[1]!.text).toContain("structure.stitchMinPrompt")
     // fresh dispatches: a different sub-guard — normal flow with a compliant session
     const sid = "sess-p2-badfloor-fresh"
     complyAll(sid)
     expect(await freshDispatch(sid, "code-reviewer", GOOD_PROMPT)).toBeNull()
   })
 
-  test("structure group not a plain object → structure guard fails closed (fresh + stitch)", async () => {
-    await setupWith({ structure: 42 })
+  test("structure group not a plain object → the fresh-dispatch structure guard CONFIG-ERRORs; the stitch surface is inert + loud problem (its scope falls to the empty default)", async () => {
+    await setupWith({ structure: 42 }) // non-object replaces the fixture group (withSetup merge rule)
     const sid = "sess-p2-badgroup"
     complyAll(sid)
     const m = await freshDispatch(sid, "code-reviewer", GOOD_PROMPT)
     expect(m).not.toBeNull()
     expect(m!).toContain("[config-error]")
     expect(m!).toContain(`options group "structure" must be a plain object`)
+    // the stitch scope resolves to the EMPTY default when its group is broken → inert
     const mStitch = await denyMsg({
       tool: "stitch_generate_screen_from_text",
       sessionID: `${sid}-stitch`,
       input: { prompt: BAD_STITCH_PROMPT },
     })
-    expect(mStitch).not.toBeNull()
-    expect(mStitch!).toContain("[config-error]")
+    expect(mStitch).toBeNull()
+    // loud: the config-problems part names the broken group
+    const sys: any[] = []
+    await hooks["session.context"]({ system: sys, messages: [] })
+    expect(sys.length).toBe(2)
+    expect(sys[1]!.text).toContain(`options group "structure" must be a plain object`)
   })
 
-  test("paths broken → writes covered by the DEFAULT memory topology CONFIG-ERROR; other writes pass", async () => {
+  test("paths broken → the overwrite guard is inert + loud problem; writes pass (shaping group broken)", async () => {
     const defaultStat = _testStat.fn
     _testStat.fn = () => true
     try {
-      await setupWith({ paths: { memoryTree: "" } })
+      await setupWith({ paths: { memoryTree: 42 } }) // invalid type → paths group broken
       const sid = "sess-p2-badpaths"
       complyAll(sid) // pass the gate to reach the write guard
-      // default-covered write → CONFIG-ERROR naming the broken path (broken-group scoping)
+      // a broken paths guard covers nothing (the empty default topology): writes pass
       const mCovered = await denyMsg({
         tool: "write",
         sessionID: sid,
         input: { path: "~/.config/opencode/MEMORY.md" },
       })
-      expect(mCovered).not.toBeNull()
-      expect(mCovered!).toContain("[config-error]")
-      expect(mCovered!).toContain("paths.memoryTree")
-      // a write the default config would never have inspected passes
+      expect(mCovered).toBeNull()
       const mOutside = await denyMsg({
         tool: "write",
         sessionID: sid,
         input: { path: "/tmp/opencode/mandator-ext6/flex-design/unrelated.txt" },
       })
       expect(mOutside).toBeNull()
+      // the failure is LOUD: the config-problems part names paths.memoryTree
+      const sys: any[] = []
+      await hooks["session.context"]({ system: sys, messages: [] })
+      expect(sys.length).toBe(2)
+      expect(sys[1]!.text).toContain("paths.memoryTree")
+      expect(sys[1]!.text).toContain("failing closed")
+    } finally {
+      _testStat.fn = defaultStat
+    }
+  })
+
+  test("paths.memoryTree '' (VALID) → the overwrite guard is OFF: even an existing memory write passes, no problems", async () => {
+    const defaultStat = _testStat.fn
+    _testStat.fn = () => true
+    try {
+      await setupWith({ paths: { memoryTree: "", memoryIndex: "" } })
+      const sid = "sess-p2-offpaths"
+      complyAll(sid)
+      const m = await denyMsg({
+        tool: "write",
+        sessionID: sid,
+        input: { path: "~/.config/opencode/MEMORY.md" },
+      })
+      expect(m).toBeNull()
+      const sys: any[] = []
+      await hooks["session.context"]({ system: sys, messages: [] })
+      expect(sys.length).toBe(1) // no problems
     } finally {
       _testStat.fn = defaultStat
     }
@@ -1080,26 +1217,25 @@ describe("config Phase 2 — invalid options fail closed per guard (CONFIG-ERROR
 // descriptionHint + primer.mode / primer.text.
 //
 // PRESENTATION failure semantics (design §C(c), the other half of the hybrid):
-// an invalid presentation entry (wrong type, empty string, unknown {var},
-// invalid primer mode, missing primer.text) falls back to the BUILT-IN DEFAULT
-// and records a problem — wording problems must never brick enforcement. The
-// per-template {var} sets map 1:1 to what the deny builders interpolate today;
-// unknown {var} in a configured template is caught at resolve time.
+// an invalid presentation entry (wrong type, unknown {var}, invalid primer mode,
+// missing primer.text with an explicit mode) falls back to the BUILT-IN DEFAULT ("")
+// and records a problem — wording problems must never brick enforcement. An EMPTY
+// STRING is a VALID template: it renders as the plugin's hardcoded GENERIC deny line
+// (opt-in flip). The per-template {var} sets map 1:1 to what the deny builders
+// interpolate; unknown {var} in a configured template is caught at resolve time.
 //
 // FIXED trailer rule (owner ruling 4 / design §E-8): the identical-loop deny
 // stays trailer-less REGARDLESS of configuration — the no-trailer rule is
 // enforced in code, never by template content.
 //
-// Primer modes (owner ruling 5, as amended by the fix-round-1 controller ruling —
-// PR #12: the frozen default mode is "default"):
-//   "default" → DEFAULTS.primer.text verbatim (primer.text ignored) — the
-//               EFFECTIVE default mode: a bare primer.text is INERT until the
-//               owner sets replace/append explicitly
-//   "replace" → primer.text verbatim (DEFAULTS ignored)
-//   "append"  → DEFAULTS.primer.text + "\n\n" + primer.text
-//   invalid mode or missing/invalid text in replace/append ⇒ default primer +
-//   problem. No-options resolution stays byte-identical (mode "default" +
-//   DEFAULTS.primer.text verbatim).
+// Primer modes (OPT-IN FLIP — supersedes the fix-round-1 PR #12 ruling, whose
+// "shipped PRIMER stays pinned" rationale is void with DEFAULTS.primer.text ""):
+//   "default" (implicit or explicit) → the configured primer.text when present, else
+//               "" (nothing injected) — the default mode CONFIGURES the primer
+//   "replace" → primer.text verbatim (explicit; text required)
+//   "append"  → DEFAULTS.primer.text + "\n\n" + text (built-in default "" → just text)
+//   invalid mode or missing/invalid text in replace/append ⇒ the default primer ("")
+//   + problem. No-options resolution is text "" + zero problems → nothing injected.
 // ============================================================================
 
 describe("config Phase 3 — resolveOptions: messages/primer resolution semantics", () => {
@@ -1166,17 +1302,15 @@ describe("config Phase 3 — resolveOptions: messages/primer resolution semantic
     expect(resolved.messages.complianceWarning).toBe(DEFAULTS.messages.complianceWarning)
   })
 
-  test("non-string or empty message values → fallback + problem", () => {
+  test("non-string message values → fallback + problem; empty strings are VALID (generic deny line)", () => {
     const a = resolveOptions({ messages: { generalBan: 42 } })
     expect(
-      a.resolved.messages.problems.some((p) => p.startsWith("messages.generalBan must be a non-empty string")),
+      a.resolved.messages.problems.some((p) => p.startsWith("messages.generalBan must be a string")),
     ).toBeTrue()
     expect(a.resolved.messages.generalBan).toBe(DEFAULTS.messages.generalBan)
     const b = resolveOptions({ messages: { backgroundBan: "" } })
-    expect(
-      b.resolved.messages.problems.some((p) => p.startsWith("messages.backgroundBan must be a non-empty string")),
-    ).toBeTrue()
-    expect(b.resolved.messages.backgroundBan).toBe(DEFAULTS.messages.backgroundBan)
+    expect(b.problems).toEqual([]) // "" is a valid template (renders the generic line when the guard fires)
+    expect(b.resolved.messages.backgroundBan).toBe("")
     // enforcement is untouched either way (presentation domain)
     expect(a.resolved.dispatch.problems).toEqual([])
     expect(b.resolved.dispatch.problems).toEqual([])
@@ -1213,10 +1347,16 @@ describe("config Phase 3 — resolveOptions: messages/primer resolution semantic
     expect(b.resolved.messages.mcpSkillHints).toEqual(DEFAULTS.messages.mcpSkillHints)
   })
 
-  test("primer.mode 'default' → DEFAULTS.primer.text verbatim (configured primer.text ignored)", () => {
+  test("primer.mode 'default' → the configured primer.text IS the injected primer (opt-in flip: no shipped primer to pin)", () => {
     const { resolved, problems } = resolveOptions({ primer: { mode: "default", text: "CUSTOM RULES" } })
     expect(problems).toEqual([])
-    expect(resolved.primer.text).toBe(DEFAULTS.primer.text)
+    expect(resolved.primer.text).toBe("CUSTOM RULES")
+  })
+
+  test("primer.mode 'default' WITHOUT text → the built-in default (\"\" = nothing injected)", () => {
+    const { resolved, problems } = resolveOptions({ primer: { mode: "default" } })
+    expect(problems).toEqual([])
+    expect(resolved.primer.text).toBe("")
   })
 
   test("primer.mode 'replace' → configured primer.text verbatim (DEFAULTS ignored)", () => {
@@ -1225,17 +1365,17 @@ describe("config Phase 3 — resolveOptions: messages/primer resolution semantic
     expect(a.resolved.primer.text).toBe("MY RULES")
   })
 
-  test("primer.mode 'append' → DEFAULTS.primer.text + configured text", () => {
+  test("primer.mode 'append' → DEFAULTS.primer.text + configured text; the built-in default is \"\" so append resolves to just the text", () => {
     const b = resolveOptions({ primer: { mode: "append", text: "ADDENDUM" } })
     expect(b.problems).toEqual([])
-    expect(b.resolved.primer.text).toBe(DEFAULTS.primer.text + "\n\nADDENDUM")
+    expect(b.resolved.primer.text).toBe("ADDENDUM") // nothing to append onto (DEFAULTS.primer.text "")
   })
 
-  test("primer.text WITHOUT mode → primer UNCHANGED (fix-round-1 ruling: a configured text alone must not change the injected primer until mode is explicitly replace/append)", () => {
-    const c = resolveOptions({ primer: { text: "TEXT ONLY" } }) // no mode → effective default "default": text inert
+  test("primer.text WITHOUT mode (default mode) → the text IS effective (supersedes the fix-round-1 inert ruling: with no shipped primer there is nothing to protect)", () => {
+    const c = resolveOptions({ primer: { text: "TEXT ONLY" } }) // no mode → default mode → configured text wins
     expect(c.problems).toEqual([])
-    expect(c.resolved.primer.text).toBe(DEFAULTS.primer.text)
-    expect(c.resolved.primer.problems).toEqual([]) // silent ignore: the explicit-default path behaves identically
+    expect(c.resolved.primer.text).toBe("TEXT ONLY")
+    expect(c.resolved.primer.problems).toEqual([])
   })
 
   test("primer.mode invalid → fallback to the default primer + problem naming primer.mode", () => {
@@ -1255,10 +1395,10 @@ describe("config Phase 3 — resolveOptions: messages/primer resolution semantic
     expect(a.resolved.primer.text).toBe(DEFAULTS.primer.text)
     const b = resolveOptions({ primer: { mode: "append", text: 42 } })
     expect(
-      b.resolved.primer.problems.some((p) => p.includes("primer.text must be a non-empty string")),
+      b.resolved.primer.problems.some((p) => p.includes("primer.text must be a string")),
     ).toBeTrue()
     expect(b.resolved.primer.text).toBe(DEFAULTS.primer.text)
-    const c = resolveOptions({ primer: { mode: "append", text: "" } }) // empty string is not a text
+    const c = resolveOptions({ primer: { mode: "append", text: "" } }) // "" is not a usable text for an explicit mode
     expect(c.resolved.primer.problems.length).toBeGreaterThan(0)
     expect(c.resolved.primer.text).toBe(DEFAULTS.primer.text)
   })
@@ -1292,6 +1432,10 @@ describe("config Phase 3 — resolveOptions: messages/primer resolution semantic
 })
 
 describe("config Phase 3 — per-template deny rendering + primer modes (end-to-end)", () => {
+  // The fixture's trailer/deny texts — with the merge harness, an unspecified template
+  // resolves to the fixture's verbatim text (the owner setup).
+  const FIXTURE_TRAILER = (SETUP.messages as Record<string, string>).complianceWarning
+
   test("generalBan + complianceWarning overrides render exactly: filled template + configured trailer", async () => {
     await setupWith({
       messages: {
@@ -1370,22 +1514,20 @@ describe("config Phase 3 — per-template deny rendering + primer modes (end-to-
     complyAll(sid)
     const m = await denyMsg({ tool: "adb_mcp_tap", sessionID: sid, input: {} })
     expect(m).toBe(
-      'SERVER GATE: "adb_mcp_tap" needs "adb-mcp" (open the accessibility tree first).' +
-        DEFAULTS.messages.complianceWarning,
+      'SERVER GATE: "adb_mcp_tap" needs "adb-mcp" (open the accessibility tree first).' + FIXTURE_TRAILER,
     )
-    // a skill with no configured hint keeps the hardcoded generic hint
+    // a skill with NO configured hint keeps the hardcoded generic hint: a custom
+    // MCP requirement whose skill has no mcpSkillHints entry (merge harness: the
+    // fixture's own hints stay, so the unknown-hint path needs a custom prefix)
     await setupWith({
-      messages: {
-        mcpSkillFail: 'SERVER GATE: "{tool}" needs "{skill}" ({hint}).',
-        mcpSkillHints: { "acme-skill": "unrelated" },
-      },
+      gates: { mcpRequirements: [{ prefix: "acme_", skill: "acme-skill" }] },
+      messages: { mcpSkillFail: 'SERVER GATE: "{tool}" needs "{skill}" ({hint}).' },
     })
     const sidGeneric = "sess-p3-mcp-generic"
-    complyAll(sidGeneric) // base-complete so the MCP-specific deny is reached
-    const m2 = await denyMsg({ tool: "adb_mcp_tap", sessionID: sidGeneric, input: {} })
+    complyAll(sidGeneric) // base-complete so the MCP-specific deny is reached (acme-skill NOT loaded)
+    const m2 = await denyMsg({ tool: "acme_drive", sessionID: sidGeneric, input: {} })
     expect(m2).toBe(
-      'SERVER GATE: "adb_mcp_tap" needs "adb-mcp" (load it before driving this server).' +
-        DEFAULTS.messages.complianceWarning,
+      'SERVER GATE: "acme_drive" needs "acme-skill" (load it before driving this server).' + FIXTURE_TRAILER,
     )
   })
 
@@ -1401,13 +1543,13 @@ describe("config Phase 3 — per-template deny rendering + primer modes (end-to-
       sessionID: "sess-p3-bgb",
       input: { agent: "code-reviewer", background: false },
     })
-    expect(mBg).toBe("FOREGROUND DENIED. Use background:true." + DEFAULTS.messages.complianceWarning)
+    expect(mBg).toBe("FOREGROUND DENIED. Use background:true." + FIXTURE_TRAILER)
     const mAgent = await denyMsg({
       tool: "subagent",
       sessionID: "sess-p3-agent",
       input: { background: true, prompt: GOOD_PROMPT },
     })
-    expect(mAgent).toBe("NO AGENT GIVEN. Pick one." + DEFAULTS.messages.complianceWarning)
+    expect(mAgent).toBe("NO AGENT GIVEN. Pick one." + FIXTURE_TRAILER)
   })
 
   test("memoryMandateFail override renders on a structured brief without the mandate", async () => {
@@ -1415,7 +1557,7 @@ describe("config Phase 3 — per-template deny rendering + primer modes (end-to-
     const sid = "sess-p3-mandate"
     complyAll(sid)
     const m = await freshDispatch(sid, "code-reviewer", "Role: tester. Task: test. Context: c. Constraints: none. Output format: report.")
-    expect(m).toBe("NO MEMORY MANDATE. Add it." + DEFAULTS.messages.complianceWarning)
+    expect(m).toBe("NO MEMORY MANDATE. Add it." + FIXTURE_TRAILER)
   })
 
   test("memoryOverwriteFail override renders on a guarded write (hermetic via _testStat)", async () => {
@@ -1426,25 +1568,30 @@ describe("config Phase 3 — per-template deny rendering + primer modes (end-to-
       const sid = "sess-p3-overwrite"
       complyAll(sid)
       const m = await denyMsg({ tool: "write", sessionID: sid, input: { path: "~/.config/opencode/MEMORY.md" } })
-      expect(m).toBe("MEMORY IS APPEND-ONLY." + DEFAULTS.messages.complianceWarning)
+      expect(m).toBe("MEMORY IS APPEND-ONLY." + FIXTURE_TRAILER)
     } finally {
       _testStat.fn = defaultStat
     }
   })
 
-  test("descriptionHint override replaces the tool-description hint", async () => {
+  test("descriptionHint override replaces the tool-description hint; the fixture hint returns with the full fixture", async () => {
     await setupWith({ messages: { descriptionHint: "\n\nSHORT POLICY HINT." } })
     expect(transformed!.subagent.description).toBe("ORIG" + "\n\nSHORT POLICY HINT.")
-    await setupWith({}) // defaults → the default hint again
-    expect(transformed!.subagent.description).toBe("ORIG" + DEFAULTS.messages.descriptionHint)
+    await setupWith({}) // the full fixture → the fixture hint again
+    expect(transformed!.subagent.description).toBe("ORIG" + (SETUP.messages as Record<string, string>).descriptionHint)
+    await setupRaw(undefined) // no options → NO hint at all
+    expect(transformed!.subagent.description).toBe("ORIG")
   })
 
-  test("configured template with an unknown {var} falls back at runtime: deny renders the DEFAULT template + problem recorded", async () => {
+  test("configured template with an unknown {var} falls back to the empty default → the GENERIC deny line renders + problem recorded", async () => {
     await setupWith({ messages: { gateMissing: "NEEDED: {missing} plus {tool}." } }) // {tool} unknown here
     const m = await denyMsg({ tool: "shell", sessionID: "sess-p3-fallback", input: {} })
     expect(m).not.toBeNull()
-    expect(m!).toContain("Owner mandate: this action requires") // the DEFAULT template rendered
+    expect(m!).toContain("the deny template for this guard is not configured") // the hardcoded GENERIC line
+    expect(m!).toContain("the configured dispatch policy")
     expect(m!).not.toContain("NEEDED: {missing}")
+    expect(m!).not.toContain("Owner mandate") // the empty default renders the generic line, not a fixture text
+    expect(m!).toContain(FIXTURE_TRAILER) // the fixture trailer still appends (its template is configured)
     const sys: any[] = []
     await hooks["session.context"]({ system: sys, messages: [] })
     expect(sys.length).toBe(2)
@@ -1452,7 +1599,7 @@ describe("config Phase 3 — per-template deny rendering + primer modes (end-to-
     expect(sys[1]!.text).toContain("{tool}")
   })
 
-  test("primer modes end-to-end: replace/append/text-without-mode-inert/byte-identical-default via session.context", async () => {
+  test("primer modes end-to-end: replace/append/text-effective/fixture-primer/no-options-nothing via session.context", async () => {
     await setupWith({ primer: { mode: "replace", text: "MY RULES ONLY." } })
     const sysReplace: any[] = []
     await hooks["session.context"]({ system: sysReplace, messages: [] })
@@ -1463,28 +1610,32 @@ describe("config Phase 3 — per-template deny rendering + primer modes (end-to-
     const sysAppend: any[] = []
     await hooks["session.context"]({ system: sysAppend, messages: [] })
     expect(sysAppend.length).toBe(1)
-    expect(sysAppend[0]!.text).toBe(DEFAULTS.primer.text + "\n\nADDENDUM.")
+    expect(sysAppend[0]!.text).toBe("ADDENDUM.") // the built-in default is "" — nothing to append onto
 
-    await setupWith({ primer: { text: "TEXT ONLY OVERRIDE." } }) // no mode → configured text inert (fix-round-1 ruling)
+    await setupWith({ primer: { text: "TEXT ONLY OVERRIDE." } }) // no mode → default mode → the text IS effective (opt-in flip)
     const sysTextOnly: any[] = []
     await hooks["session.context"]({ system: sysTextOnly, messages: [] })
     expect(sysTextOnly.length).toBe(1)
-    expect(sysTextOnly[0]!.text).toBe(DEFAULTS.primer.text) // primer UNCHANGED
+    expect(sysTextOnly[0]!.text).toBe("TEXT ONLY OVERRIDE.")
 
-    await setupWith({}) // defaults → byte-identical PRIMER, no problems part
+    await setupWith({}) // the full fixture → the fixture PRIMER verbatim, no problems part
+    const sysFixture: any[] = []
+    await hooks["session.context"]({ system: sysFixture, messages: [] })
+    expect(sysFixture.length).toBe(1)
+    expect(sysFixture[0]!.text).toBe((SETUP.primer as { text: string }).text)
+
+    await setupRaw(undefined) // NO options → nothing injected at all
     const sysDefault: any[] = []
     await hooks["session.context"]({ system: sysDefault, messages: [] })
-    expect(sysDefault.length).toBe(1)
-    expect(sysDefault[0]!.text).toBe(DEFAULTS.primer.text)
+    expect(sysDefault.length).toBe(0)
   })
 
-  test("primer invalid mode end-to-end: default primer injected + problems part naming primer.mode", async () => {
+  test("primer invalid mode end-to-end: the empty fallback primer injects NOTHING + problems part naming primer.mode", async () => {
     await setupWith({ primer: { mode: "prepend" } })
     const sys: any[] = []
     await hooks["session.context"]({ system: sys, messages: [] })
-    expect(sys.length).toBe(2)
-    expect(sys[0]!.text).toBe(DEFAULTS.primer.text) // fallback primer
-    expect(sys[1]!.text).toContain("dispatch-policy config problems:")
-    expect(sys[1]!.text).toContain("primer.mode")
+    expect(sys.length).toBe(1) // no primer part (fallback text ""), only the problems part
+    expect(sys[0]!.text).toContain("dispatch-policy config problems:")
+    expect(sys[0]!.text).toContain("primer.mode")
   })
 })

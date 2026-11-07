@@ -1,0 +1,138 @@
+{
+  "dispatch": {
+    "tools": [
+      "subagent"
+    ],
+    "forbiddenAgents": [
+      "general"
+    ],
+    "requireBackground": true,
+    "requireAgent": true
+  },
+  "skills": {
+    "mandatory": [
+      "brainstorming",
+      "grilling",
+      "build-with-exa",
+      "context7-mcp"
+    ],
+    "orchestrator": [
+      "subagent-driven-development",
+      "dispatching-parallel-agents",
+      "prompt-engineering-patterns"
+    ]
+  },
+  "gates": {
+    "tools": [
+      "edit",
+      "write",
+      "shell",
+      "bash",
+      "apply_patch",
+      "subagent",
+      "webfetch",
+      "websearch",
+      "execute"
+    ],
+    "exaSubstring": "exa",
+    "mcpRequirements": [
+      {
+        "prefix": "context7",
+        "skill": "context7-mcp"
+      },
+      {
+        "prefix": "adb_mcp",
+        "skill": "adb-mcp"
+      }
+    ],
+    "readTargets": [
+      {
+        "key": "memory",
+        "suffix": ".config/opencode/MEMORY.md"
+      },
+      {
+        "key": "workflow",
+        "suffix": ".config/opencode/memory/topics/workflow.md"
+      },
+      {
+        "key": "workflow-git-pr",
+        "suffix": ".config/opencode/memory/topics/workflow-git-pr.md"
+      }
+    ],
+    "memoryMandatePattern": "(MEMORY\\.md|memory/(topics|projects)|глобальн\\p{L}*\\s+пам(ять|яти)|global memory)"
+  },
+  "structure": {
+    "blocks": {
+      "role": {
+        "name": "Role",
+        "pattern": "(you are|your role|role\\s*:|acting as|роль\\s*:)"
+      },
+      "task": {
+        "name": "Task",
+        "pattern": "(tasks?\\b|objectives?\\b|goals?\\b|mission\\b|задач|цель)"
+      },
+      "context": {
+        "name": "Context",
+        "pattern": "(contexts?\\b|background\\b|контекст)"
+      },
+      "constraints": {
+        "name": "Constraints",
+        "pattern": "(constraints?\\b|requirements?\\b|guidelines?\\b|rules?\\b|\\bmust\\b|do not|don't|avoid|never|forbidden|требован|ограничен|правил|запрещ)"
+      },
+      "output": {
+        "name": "Output format",
+        "pattern": "(output format|response format|expected output|deliverable|reports?\\b|formats?\\b|includes?\\b|отч[её]т|формат)"
+      }
+    },
+    "subagentProfile": [
+      "role",
+      "task",
+      "context",
+      "constraints",
+      "output"
+    ],
+    "stitchProfile": [
+      "task",
+      "context",
+      "constraints",
+      "output"
+    ],
+    "stitchPromptTools": [
+      "stitch_generate_screen_from_text",
+      "stitch_edit_screens",
+      "stitch_generate_variants"
+    ],
+    "stitchMinPrompt": 120
+  },
+  "caps": {
+    "identicalMax": 4,
+    "chainMax": 6,
+    "chainOverrideMarker": "[chain-cap-override]"
+  },
+  "paths": {
+    "memoryIndex": "~/.config/opencode/MEMORY.md",
+    "memoryTree": "~/.config/opencode/memory"
+  },
+  "messages": {
+    "complianceWarning": " COMPLIANCE WARNING: all output is audited against the requirements of the skills applied in this session — work that violates them is REJECTED and must be redone. This explicitly covers dispatches: a subagent sent with a poorly written brief (violating prompt-engineering requirements — vague task, missing context/constraints, no report contract) will be REJECTED and must be re-dispatched.",
+    "generalBan": "DENIED by dispatch-policy plugin: agent type \"{agent}\" is FORBIDDEN by owner mandate. Re-dispatch with a specialized agent type — e.g. code-reviewer, backend-architect, frontend-developer, trend-researcher (full list: opencode debug agents).",
+    "backgroundBan": "DENIED by dispatch-policy plugin: owner mandate requires background:true on every subagent dispatch. Re-dispatch the SAME call with background:true.",
+    "agentMissing": "DENIED by dispatch-policy plugin: the dispatch is missing a specialized agent type (agent missing or empty). Pick a specialized agent type — e.g. backend-architect, code-reviewer, frontend-developer, trend-researcher (full list: opencode debug agents) — then re-run this exact call.",
+    "gateMissing": "Owner mandate: this action requires, in this session first: {missing}. Load skills via the `skill` tool (one call per skill); read memory files with the `read` tool. Then re-run this exact call.",
+    "structureFail": "DENIED by dispatch-policy plugin: prompt-structure check (per the prompt-engineering-patterns skill) on the {target} prompt failed. Missing required block(s): {missing}. Structure the prompt with explicit blocks: {blocks}. Then re-run this exact call.",
+    "memoryMandateFail": "DENIED by dispatch-policy plugin: the dispatch brief does not mandate reading global memory (owner hard dispatch protocol: every subagent brief must instruct the subagent to read ~/.config/opencode/MEMORY.md + memory/topics/* + memory/projects/* and list what it read in its report). Add the memory mandate to the brief, then re-run this exact call.",
+    "memoryOverwriteFail": "DENIED by dispatch-policy plugin: whole-file write over an EXISTING global memory file is forbidden — whole-file rewrites of memory race concurrent agents (2026-10-09/10 incidents). Append or supersede the entry via the `edit` tool instead (append-only by anchors; supersede-in-place, never full-file write). Creating a NEW memory file is allowed.",
+    "identicalLoopFail": "DENIED by dispatch-policy plugin: identical dispatch sent {n} times in this session — runaway-loop guard on identical (agent, prompt) pairs. This deny is final for identical resends: differentiate the briefs (per-perspective prompts) or escalate to the owner.",
+    "chainCapFail": "DENIED by dispatch-policy plugin: this child-session continuation chain reached {n} continuations in one session (cap {cap}) — persistent-worker pumping of one child session is the anti-pattern the owner bans (2026-09-20; PR97/PR111). Start a FRESH agent instead and hand off state via a git branch + a structured brief. To continue once beyond the cap deliberately, add [chain-cap-override] <reason> to the continuation prompt, then re-run this exact call.",
+    "mcpSkillFail": "DENIED by dispatch-policy plugin: MCP tool \"{tool}\" requires its skill first. Invoke `skill` with id \"{skill}\" — it defines the correct usage of this server's tools ({hint}) — then re-run this exact call.",
+    "mcpSkillHints": {
+      "context7-mcp": "for context7: resolve-library-id before query-docs",
+      "adb-mcp": "for adb-mcp: read the accessibility tree before tapping"
+    },
+    "descriptionHint": "\n\nPOLICY (enforced by the dispatch-policy plugin): every dispatch MUST pass background:true; agent type \"general\" is FORBIDDEN — pick a specialized agent type."
+  },
+  "primer": {
+    "mode": "default",
+    "text": "[auto-injected operating rules — non-negotiable]\n- Before task decisions consult global memory: ~/.config/opencode/MEMORY.md + memory/topics/* + memory/projects/* (list what you read). Keep memory live: supersede, never duplicate; subagents never write memory files — send facts to the controller.\n- Skills are MANDATORY and fire BEFORE the work: brainstorming before any feature/creative work (produce a bounded spec first, not code); grilling before new features (interview until the spec has no holes; a found hole is a STOP-blocker — resolve with the owner, never guess); build-with-exa for every external fact (Exa primary source); context7-mcp before touching the context7 MCP (resolve-library-id before query-docs); plus ≥2 more skills you pick as relevant to THIS task. In every report list every skill invoked with one line on what it changed — a report without the skill list is incomplete.\n- Subagent dispatches: background:true ALWAYS; specialized agent types only — `general` is FORBIDDEN; new task = fresh session (never pass sessionID); controller verifies results (git status / real output) — never trust reports blindly.\n- Every dispatch brief has five labeled blocks — Role / Task / Context / Constraints / Output format — written for a cold reader with zero session context: objective, exact output shape, tool/source guidance, task boundaries. The brief must also carry the memory mandate (read ~/.config/opencode/MEMORY.md + memory/topics/* + memory/projects/*, list what was read), the skill mandate, and the report contract. The plugin denies briefs missing a block — write it right the first time.\n- The orchestrator NEVER implements: no edits, builds, gates, or pushes by your own hand — no exceptions, not even mechanical fixes or scripted renames; ALL implementation goes to dispatched subagents. Parallel implementation only with disjoint file scopes or separate worktrees (never two agents on the same output paths).\n- Every change: branch → PR → squash-merge; never push main directly; no stash without explicit yes; no deploy/publish without explicit owner word.\n- Quality gates run as standalone blocking commands; a failed gate must make merge/push unreachable; never chain gate+release in one `;`/`&&` command.\n- Scratch in /tmp or ~/.opencode/plan/; engagement memory goes to global memory, never ~/ root clutter; kill processes by exact PID only (no pkill/killall by name).\n- Deliverable format (file type, layout standard, one vs many artifacts) is an explicit early question — never default it.\n- Estimates (time/cost/points) only on explicit request. Chat with owner: Russian. Code/reports: English.\n- External facts via Exa; every screenshot/visual → Z.AI Vision MCP; fail loudly — never fake success paths. cloakbrowser MCP is OWNER-LOCKED: every invocation MUST pass humanize=True and human_preset=careful — no exceptions; all other parameters at your discretion.\n- [skill gate] This session's plugin ENFORCES the skill mandate: edit/write/bash/subagent-dispatch/web/execute calls are DENIED until `skill` has been invoked for brainstorming, grilling, build-with-exa, and context7-mcp in this session. If denied: invoke the four skills, then re-run your call unchanged.\n- [skill gate: memory + orchestrator] Every gated call additionally requires a `read` of ~/.config/opencode/MEMORY.md in this session; before dispatching ANY subagent, the session must ALSO have loaded skills `subagent-driven-development` + `dispatching-parallel-agents` + `prompt-engineering-patterns` and read ~/.config/opencode/memory/topics/workflow.md + workflow-git-pr.md. Deny messages list exactly what is missing — comply, then re-run your call unchanged."
+  }
+}
