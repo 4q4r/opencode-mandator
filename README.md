@@ -307,4 +307,4 @@ Released under the MIT License — see [LICENSE](LICENSE).
 
 ---
 
-<p align="center"><sub>Owner: 4q4r · License: MIT · Private repository.</sub></p>
+<p align="center"><sub>Owner: 4q4r · License: MIT</sub></p>

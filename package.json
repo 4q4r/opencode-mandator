@@ -1,7 +1,7 @@
 {
   "name": "opencode-mandator",
   "private": true,
-  "description": "Deterministic enforcement plugin for OpenCode v2 — dispatch policy, skill gate, memory-read gate, orchestrator preflight.",
+  "description": "Deterministic enforcement plugin for OpenCode v2 — skills gate, memory gate, dispatch-brief structure, loop breakers. Opt-in, config-driven via opencode.json (36 options).",
   "type": "module",
   "scripts": {
     "test": "bun test"

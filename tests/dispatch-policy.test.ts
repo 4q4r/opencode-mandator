@@ -3,7 +3,7 @@
 // Probe semantics preserved 1:1: same events, same session IDs, same state-mutation
 // order (bun runs tests in declaration order within a file). Structural changes only:
 // bun:test harness instead of the linear check() script, and os.homedir() instead of
-// the hardcoded "/home/whoami" (tilde-expansion parity with the plugin's own expansion).
+// the hardcoded home directory (tilde-expansion parity with the plugin's own expansion).
 //
 // OPT-IN FLIP (owner decision 2026-11-07): with no options the plugin is INERT, so the
 // behavior suite runs against the CANONICAL SETUP FIXTURE (tests/fixtures/
