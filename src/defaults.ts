@@ -304,9 +304,11 @@ export const DEFAULTS = deepFreeze({
       'background:true; agent type "general" is FORBIDDEN — pick a specialized agent type.',
   },
   primer: {
-    // §A primer: "replace" (the injected system text is exactly primer.text) is the
-    // Phase-0 default; "append" support and option reading are Phase 3.
-    mode: "replace",
+    // §A primer (as amended by the fix-round-1 controller ruling, PR #12): "default"
+    // is the shipped default — the frozen PRIMER above stays pinned and a configured
+    // primer.text alone must NOT change the injected primer until primer.mode is
+    // explicitly set to "replace" or "append". "append" composes DEFAULTS text + text.
+    mode: "default",
     text: PRIMER,
   },
 })

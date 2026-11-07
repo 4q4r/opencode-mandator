@@ -133,7 +133,7 @@ const SNAPSHOT = deepFreeze({
       'background:true; agent type "general" is FORBIDDEN — pick a specialized agent type.',
   },
   primer: {
-    mode: "replace",
+    mode: "default",
     text: `[auto-injected operating rules — non-negotiable]
 - Before task decisions consult global memory: ~/.config/opencode/MEMORY.md + memory/topics/* + memory/projects/* (list what you read). Keep memory live: supersede, never duplicate; subagents never write memory files — send facts to the controller.
 - Skills are MANDATORY and fire BEFORE the work: brainstorming before any feature/creative work (produce a bounded spec first, not code); grilling before new features (interview until the spec has no holes; a found hole is a STOP-blocker — resolve with the owner, never guess); build-with-exa for every external fact (Exa primary source); context7-mcp before touching the context7 MCP (resolve-library-id before query-docs); plus ≥2 more skills you pick as relevant to THIS task. In every report list every skill invoked with one line on what it changed — a report without the skill list is incomplete.
@@ -177,8 +177,8 @@ describe("defaults parity — Flexibility Phase 0 drift guard", () => {
     expect(DEFAULTS.caps.chainOverrideMarker).toBe("[chain-cap-override]")
   })
 
-  test("PRIMER: starts with the auto-injected header, carries OWNER-LOCKED, mode 'replace'", () => {
-    expect(DEFAULTS.primer.mode).toBe("replace")
+  test("PRIMER: starts with the auto-injected header, carries OWNER-LOCKED, mode 'default' (fix-round-1 ruling)", () => {
+    expect(DEFAULTS.primer.mode).toBe("default")
     expect(DEFAULTS.primer.text.startsWith("[auto-injected operating rules — non-negotiable]")).toBeTrue()
     expect(DEFAULTS.primer.text).toContain("OWNER-LOCKED")
   })

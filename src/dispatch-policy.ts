@@ -24,7 +24,14 @@ import { resolveOptions } from "./config.ts"
 // structure.blocks (invalid regex ⇒ that structure guard fails closed with a
 // CONFIG-ERROR naming the path) / structure.subagentProfile / structure.stitchProfile
 // (cross-validated against blocks) / structure.stitchPromptTools / structure.stitchMinPrompt,
-// paths.memoryIndex / paths.memoryTree. With NO options the resolved config is
+// paths.memoryIndex / paths.memoryTree. Flexibility Phase 3 (owner-approved,
+// 2026-11-07) wires the PRESENTATION groups (+15; 36 total — the taxonomy is
+// complete): messages.* (13 deny/description templates consumed by the deny builders
+// via fill(); an unknown {var} ⇒ fallback to the default template + problem) and
+// primer.mode/text ("default" → DEFAULTS.primer.text verbatim; "replace" → configured
+// text verbatim; "append" → default + "\n\n" + configured). Presentation problems are
+// warn-class; the identical-loop deny stays trailer-less REGARDLESS of configuration
+// (code rule, owner ruling 4). With NO options the resolved config is
 // byte-identical to the pre-migration hardcodes — the baseline test suite is the
 // parity contract. Config problems surface as a system text part AFTER the PRIMER.
 //
@@ -133,22 +140,22 @@ import { resolveOptions } from "./config.ts"
 //     the structure check silently never fires (same documented degradation as the
 //     tool-description hint for renamed tools).
 
-// PRIMER v2 (owner-approved 2026-11-06, 13 bullets; ext-7.1 sync 2026-11-07) lives
-// byte-identical in DEFAULTS.primer.text (defaults.ts).
-const PRIMER = DEFAULTS.primer.text
-
 // Flexibility Phase 1: the dispatch/gate/cap guard PARAMETERS resolve per-setup from
 // ctx.options (src/config.ts, hybrid failure semantics per owner rulings 2026-11-07).
 // The DEFAULT-derived sets below exist ONLY as the fail-closed fallback SCOPE for a
 // broken group (design §C(c)): when a group's options are invalid, the guard still
 // scopes its CONFIG-ERROR denies at the calls the default config would have covered —
 // it never silently widens or narrows the affected surface.
+// Flexibility Phase 3: the PRESENTATION groups (messages/primer) resolve per-setup as
+// well — the deny builders live inside setup() and close over CFG.messages, and the
+// context hook injects CFG.primer.text (the FINAL text after primer-mode resolution).
+// Presentation fallbacks are warn-class (CONFIG_PROBLEMS); enforcement is unaffected.
 const DEFAULT_DISPATCH_TOOLS = new Set(DEFAULTS.dispatch.tools)
 
 // ext 7.1: MCP→skill requirements — an MCP tool may not be driven without its related
 // skill. Flexibility Phase 2: the prefix table is a per-setup option (gates.mcpRequirements,
-// resolved inside setup; per-skill hints stay keyed by skillId in
-// DEFAULTS.messages.mcpSkillHints — an unknown skill gets the generic hint). The
+// resolved inside setup; per-skill hints live in messages.mcpSkillHints — a Phase-3
+// option keyed by skillId, an unknown skill gets the generic hint). The
 // DEFAULT-derived table below is the broken-group fallback scope only (broken-group
 // scoping: a broken gates group still scopes its CONFIG-ERROR denies at the calls the
 // default config would have covered).
@@ -334,85 +341,7 @@ function gateMissing(
   return missing
 }
 
-// Declarative compliance warning (ext 4, owner decision — "пугалка"): appended to every
-// deny message. Wording lives in DEFAULTS.messages.complianceWarning (including the
-// honesty note: NO hook audits output — deterrent only, docs/RULES.md §3); the trailer's
-// PRESENCE on every deny except the identical-loop deny is fixed in code (§E).
-const COMPLIANCE_WARNING = DEFAULTS.messages.complianceWarning
-
-// ext 6.7 / row-3 ban: the general-ban deny names the banned agent ({agent} template).
-function denyGeneral(agent: string): string {
-  return fill(DEFAULTS.messages.generalBan, { agent }) + COMPLIANCE_WARNING
-}
-
-const DENY_BACKGROUND = DEFAULTS.messages.backgroundBan + COMPLIANCE_WARNING
-
-// ext 6.7: actionable deny for missing/empty agent (runtime would only produce the
-// generic schema error "Invalid arguments … agent: Missing key" — no policy guidance).
-const DENY_AGENT_MISSING = DEFAULTS.messages.agentMissing + COMPLIANCE_WARNING
-
-// ext 6.1: fresh dispatch brief never instructs the subagent to read global memory.
-const DENY_MEMORY_MANDATE = DEFAULTS.messages.memoryMandateFail + COMPLIANCE_WARNING
-
-// ext 6.6: whole-file `write` over an existing global memory file (last-writer-wins
-// rewrites destroyed memory entries in the 2026-10-09/10 incidents).
-const DENY_MEMORY_OVERWRITE = DEFAULTS.messages.memoryOverwriteFail + COMPLIANCE_WARNING
-
-// ext 7.1: per-skill usage hint in the MCP→skill deny; an unmapped skill gets the
-// generic hint. Hints live in DEFAULTS.messages.mcpSkillHints.
-function mcpSkillHint(skill: string): string {
-  return (DEFAULTS.messages.mcpSkillHints as Record<string, string>)[skill] ?? "load it before driving this server"
-}
-
-function denyMcpSkill(tool: string, skill: string): string {
-  return (
-    fill(DEFAULTS.messages.mcpSkillFail, { tool, skill, hint: mcpSkillHint(skill) }) +
-    COMPLIANCE_WARNING
-  )
-}
-
-// ext 6.4: identical-dispatch circuit breaker — increment-then-check per session; the
-// deny fires when the count of identical fresh dispatches (same agent + prompt) reaches
-// the resolved identicalMax (3 identical executions pass at the default 4, the 4th is
-// denied). Phase 1: the cap is a per-setup option (caps.identicalMax); an invalid value
-// means EFFECTIVE CAP 1 + CONFIG-ERROR deny (owner ruling 2026-11-07), and `null` turns
-// the breaker off. Owner approved 2026-10-25.
-
-// Deliberate deltas vs the analyst sketch, owner decision (ext-6.4 brief): this deny
-// carries NO COMPLIANCE_WARNING trailer (its "must be re-dispatched" wording contradicts
-// the guard) and NO "re-run this exact call" instruction (re-running is exactly what is
-// being denied). The deny is FINAL for identical resends: differentiate the briefs or
-// escalate. It is the plugin's only deny without the shared trailer (docs/RULES.md §3) —
-// the no-trailer rule is enforced HERE, not by template content.
-function denyIdenticalLoop(n: number): string {
-  return fill(DEFAULTS.messages.identicalLoopFail, { n: String(n) })
-}
-
-// ext 6.3: continuation-chain cap — increment-then-check per (parent session, child
-// session) pair; the deny fires when a child's continuation count passes the resolved
-// chainMax (6 continuations pass at the default, the 7th is denied). Phase 1: the cap is
-// a per-setup option (caps.chainMax); an invalid value means EFFECTIVE CAP 1 + CONFIG-
-// ERROR deny and `null` turns the cap off (owner rulings 2026-11-07). Denied calls still
-// increment, and Variant A overrides still increment: the counter tracks reality.
-
-// Variant A escape (owner requirement 2026-10-25: adjustable without config edits): a
-// continuation that would exceed the cap is ALLOWED iff the prompt carries the marker
-// followed by a NON-EMPTY reason — a bare marker does not unlock. Phase 1: the marker is
-// a per-setup option (caps.chainOverrideMarker) compiled to the same regex shape per
-// setup; an invalid marker fails the chain guard closed (the escape cannot be evaluated).
-
-// Unlike denyIdenticalLoop, this deny carries the COMPLIANCE_WARNING trailer and the
-// re-run instruction — here the re-run advice IS valid: re-running with the added
-// marker is exactly the sanctioned one-shot escape, alongside the primary recovery
-// (start a FRESH agent; the persistent-worker anti-pattern, owner bans 2026-09-20 /
-// PR97 / PR111).
-function denyContinuationChain(n: number, cap: number): string {
-  return (
-    fill(DEFAULTS.messages.chainCapFail, { n: String(n), cap: String(cap) }) +
-    COMPLIANCE_WARNING
-  )
-}
-
+// ext 5: block-presence scan (pure logic — the deny wording is a resolved template).
 function missingBlocks(
   prompt: string,
   profile: ReadonlyArray<string>,
@@ -420,24 +349,6 @@ function missingBlocks(
 ): string[] {
   return profile.filter((key) => !blocks[key]?.re.test(prompt)).map((key) => blocks[key]!.name)
 }
-
-function denyStructure(
-  target: string,
-  missing: string[],
-  profile: ReadonlyArray<string>,
-  blocks: Record<string, { name: string; re: RegExp }>,
-): string {
-  const guide = profile.map((key) => blocks[key]!.name).join(" / ")
-  return (
-    fill(DEFAULTS.messages.structureFail, {
-      target,
-      missing: missing.join("; "),
-      blocks: guide,
-    }) + COMPLIANCE_WARNING
-  )
-}
-
-const DESCRIPTION_HINT = DEFAULTS.messages.descriptionHint
 
 function enforcementDisabled(): boolean {
   return process.env.OPENCODE_ENFORCE_OFF === "1"
@@ -454,6 +365,91 @@ export default Plugin.define({
     const { resolved: CFG, problems: CONFIG_PROBLEMS } = resolveOptions(
       (ctx as { options?: unknown } | undefined)?.options ?? {},
     )
+
+    // Flexibility Phase 3: presentation groups — the deny builders close over the
+    // RESOLVED templates (CFG.messages) instead of DEFAULTS; primer injection uses
+    // CFG.primer.text (the FINAL text after primer-mode resolution). Presentation
+    // fallbacks are warn-class (they surface via CONFIG_PROBLEMS); enforcement is
+    // never affected by wording problems.
+    const MSG = CFG.messages
+
+    // Declarative compliance warning (ext 4, owner decision — "пугалка"): appended to
+    // every deny message. Wording is messages.complianceWarning (Phase-3 template);
+    // the trailer's PRESENCE on every deny except the identical-loop deny is fixed in
+    // code (design §E-4) — a configured template cannot remove it.
+    const COMPLIANCE_WARNING = MSG.complianceWarning
+
+    // Row-3 ban: the general-ban deny names the banned agent ({agent} template).
+    function denyGeneral(agent: string): string {
+      return fill(MSG.generalBan, { agent }) + COMPLIANCE_WARNING
+    }
+
+    const DENY_BACKGROUND = MSG.backgroundBan + COMPLIANCE_WARNING
+
+    // ext 6.7: actionable deny for missing/empty agent (runtime would only produce the
+    // generic schema error "Invalid arguments … agent: Missing key" — no policy guidance).
+    const DENY_AGENT_MISSING = MSG.agentMissing + COMPLIANCE_WARNING
+
+    // ext 6.1: fresh dispatch brief never instructs the subagent to read global memory.
+    const DENY_MEMORY_MANDATE = MSG.memoryMandateFail + COMPLIANCE_WARNING
+
+    // ext 6.6: whole-file `write` over an existing global memory file (last-writer-wins
+    // rewrites destroyed memory entries in the 2026-10-09/10 incidents).
+    const DENY_MEMORY_OVERWRITE = MSG.memoryOverwriteFail + COMPLIANCE_WARNING
+
+    // ext 7.1: per-skill usage hint in the MCP→skill deny; an unmapped skill gets the
+    // hardcoded generic hint (messages.mcpSkillHints is the configured hint table).
+    function mcpSkillHint(skill: string): string {
+      return MSG.mcpSkillHints[skill] ?? "load it before driving this server"
+    }
+
+    function denyMcpSkill(tool: string, skill: string): string {
+      return fill(MSG.mcpSkillFail, { tool, skill, hint: mcpSkillHint(skill) }) + COMPLIANCE_WARNING
+    }
+
+    // Row-3 gate deny: names exactly what is missing ({missing} template).
+    function denyGateMissing(missing: string[]): string {
+      return fill(MSG.gateMissing, { missing: missing.join("; ") }) + COMPLIANCE_WARNING
+    }
+
+    // ext 6.4 deny — deliberately trailer-less REGARDLESS of configuration (owner
+    // ruling 4 / design §E-8): this deny carries NO COMPLIANCE_WARNING trailer (its
+    // "must be re-dispatched" wording contradicts the guard) and NO "re-run this exact
+    // call" instruction (re-running is exactly what is being denied). The no-trailer
+    // rule is enforced HERE, in code — never by template content (a template that
+    // embeds trailer text is a content bug, caught by the e2e parity tests).
+    function denyIdenticalLoop(n: number): string {
+      return fill(MSG.identicalLoopFail, { n: String(n) })
+    }
+
+    // ext 6.3 deny — unlike denyIdenticalLoop, this one DOES carry the trailer and the
+    // re-run instruction: re-running with the added marker is exactly the sanctioned
+    // one-shot escape, alongside the primary recovery (start a FRESH agent; the
+    // persistent-worker anti-pattern, owner bans 2026-09-20 / PR97 / PR111).
+    function denyContinuationChain(n: number, cap: number): string {
+      return fill(MSG.chainCapFail, { n: String(n), cap: String(cap) }) + COMPLIANCE_WARNING
+    }
+
+    // ext 5 deny — the empty-prompt prefix is composed by the CALLER (hardcoded code
+    // rule, design §A #27), not part of the template.
+    function denyStructure(
+      target: string,
+      missing: string[],
+      profile: ReadonlyArray<string>,
+      blocks: Record<string, { name: string; re: RegExp }>,
+    ): string {
+      const guide = profile.map((key) => blocks[key]!.name).join(" / ")
+      return (
+        fill(MSG.structureFail, {
+          target,
+          missing: missing.join("; "),
+          blocks: guide,
+        }) + COMPLIANCE_WARNING
+      )
+    }
+
+    // Layer 4: the one-line policy hint appended to the dispatch tool description.
+    const DESCRIPTION_HINT = MSG.descriptionHint
 
     const dispatchBroken = CFG.dispatch.problems.length > 0
     const dispatchScope = dispatchBroken ? DEFAULT_DISPATCH_TOOLS : new Set(CFG.dispatch.tools)
@@ -556,9 +552,7 @@ export default Plugin.define({
           readTargetTable,
         )
         if (missing.length > 0) {
-          throw new Error(
-            fill(DEFAULTS.messages.gateMissing, { missing: missing.join("; ") }) + COMPLIANCE_WARNING,
-          )
+          throw new Error(denyGateMissing(missing))
         }
         // ext 7.1: MCP→skill gate — AFTER the base skill/memory gate, BEFORE the ext-5
         // structure chain. A base-complete session driving an MCP tool without its
@@ -762,11 +756,15 @@ export default Plugin.define({
     // (survives compaction automatically — system parts are reassembled per request).
     // Flexibility Phase 1: when the resolved options carry problems (errors AND
     // warnings), an additional system text part naming them is pushed AFTER the PRIMER
-    // (owner-approved surfacing channel; the PRIMER part itself is byte-identical, and
-    // with zero problems nothing extra is pushed).
+    // (owner-approved surfacing channel; with zero problems nothing extra is pushed).
+    // Flexibility Phase 3: the injected text is CFG.primer.text — the FINAL text after
+    // primer-mode resolution ("default" → DEFAULTS.primer.text verbatim; "replace" →
+    // configured text; "append" → default + "\n\n" + configured; presentation
+    // fallbacks land in CONFIG_PROBLEMS). With NO options it is DEFAULTS.primer.text
+    // byte-identical (the parity path the baseline suite exercises).
     await ctx.session.hook("context", (event) => {
       if (enforcementDisabled()) return
-      event.system.push({ type: "text", text: PRIMER })
+      event.system.push({ type: "text", text: CFG.primer.text })
       if (CONFIG_PROBLEMS.length > 0) {
         event.system.push({ type: "text", text: `dispatch-policy config problems: ${CONFIG_PROBLEMS.join("; ")}` })
       }

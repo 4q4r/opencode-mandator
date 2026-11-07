@@ -30,10 +30,13 @@ const ctx: any = {
     transform: async (cb: (editor: any) => void) => {
       const tools: Record<string, { description: string }> = { subagent: { description: "ORIG" } }
       cb({ update: (id: string, fn: (t: any) => void) => { if (tools[id]) fn(tools[id]) } })
+      transformed = tools // captured like tests/dispatch-policy.test.ts (Phase-3 descriptionHint tests)
     },
   },
   session: { hook: async (name: string, cb: (e: any) => any) => { hooks[`session.${name}`] = cb } },
 }
+
+let transformed: Record<string, { description: string }> | null = null
 
 const setupWith = async (options: unknown) => {
   ctx.options = options
@@ -145,13 +148,12 @@ describe("config — resolveOptions resolution semantics", () => {
     expect(resolved.dispatch.forbiddenAgents).toEqual(DEFAULTS.dispatch.forbiddenAgents)
   })
 
-  test("messages/primer stay unwired (Phase 3); structure/paths are wired since Phase 2 (no phase warning)", () => {
+  test("messages/primer are wired since Phase 3 — no unwired-group warnings remain", () => {
     const { resolved, problems } = resolveOptions({ structure: {}, paths: {}, messages: {}, primer: {} })
-    expect(problems).toContain(`options group "messages" is not configurable until Phase 3 — ignored (warning)`)
-    expect(problems).toContain(`options group "primer" is not configurable until Phase 3 — ignored (warning)`)
-    expect(problems.some((p) => p.includes('"structure"'))).toBeFalse() // wired since Phase 2
-    expect(problems.some((p) => p.includes('"paths"'))).toBeFalse() // wired since Phase 2
-    expect(resolved.gates.problems).toEqual([]) // nothing broke
+    expect(problems.some((p) => p.includes("not configurable"))).toBeFalse()
+    expect(resolved.messages.problems).toEqual([]) // nothing broke
+    expect(resolved.primer.problems).toEqual([])
+    expect(resolved.primer.text).toBe(DEFAULTS.primer.text)
   })
 
   test("empty skills lists are valid + warned, and honored", () => {
@@ -1067,5 +1069,422 @@ describe("config Phase 2 — invalid options fail closed per guard (CONFIG-ERROR
     } finally {
       _testStat.fn = defaultStat
     }
+  })
+})
+
+// ============================================================================
+// Flexibility Phase 3 — the presentation groups (+15; 36 total):
+// messages.complianceWarning / generalBan / backgroundBan / agentMissing /
+// gateMissing / structureFail / memoryMandateFail / memoryOverwriteFail /
+// identicalLoopFail / chainCapFail / mcpSkillFail / mcpSkillHints /
+// descriptionHint + primer.mode / primer.text.
+//
+// PRESENTATION failure semantics (design §C(c), the other half of the hybrid):
+// an invalid presentation entry (wrong type, empty string, unknown {var},
+// invalid primer mode, missing primer.text) falls back to the BUILT-IN DEFAULT
+// and records a problem — wording problems must never brick enforcement. The
+// per-template {var} sets map 1:1 to what the deny builders interpolate today;
+// unknown {var} in a configured template is caught at resolve time.
+//
+// FIXED trailer rule (owner ruling 4 / design §E-8): the identical-loop deny
+// stays trailer-less REGARDLESS of configuration — the no-trailer rule is
+// enforced in code, never by template content.
+//
+// Primer modes (owner ruling 5, as amended by the fix-round-1 controller ruling —
+// PR #12: the frozen default mode is "default"):
+//   "default" → DEFAULTS.primer.text verbatim (primer.text ignored) — the
+//               EFFECTIVE default mode: a bare primer.text is INERT until the
+//               owner sets replace/append explicitly
+//   "replace" → primer.text verbatim (DEFAULTS ignored)
+//   "append"  → DEFAULTS.primer.text + "\n\n" + primer.text
+//   invalid mode or missing/invalid text in replace/append ⇒ default primer +
+//   problem. No-options resolution stays byte-identical (mode "default" +
+//   DEFAULTS.primer.text verbatim).
+// ============================================================================
+
+describe("config Phase 3 — resolveOptions: messages/primer resolution semantics", () => {
+  test("no raw → messages/primer resolve to pure DEFAULTS values, zero problems", () => {
+    const { resolved, problems } = resolveOptions(undefined)
+    expect(problems).toEqual([])
+    expect(resolved.messages.complianceWarning).toBe(DEFAULTS.messages.complianceWarning)
+    expect(resolved.messages.generalBan).toBe(DEFAULTS.messages.generalBan)
+    expect(resolved.messages.backgroundBan).toBe(DEFAULTS.messages.backgroundBan)
+    expect(resolved.messages.agentMissing).toBe(DEFAULTS.messages.agentMissing)
+    expect(resolved.messages.gateMissing).toBe(DEFAULTS.messages.gateMissing)
+    expect(resolved.messages.structureFail).toBe(DEFAULTS.messages.structureFail)
+    expect(resolved.messages.memoryMandateFail).toBe(DEFAULTS.messages.memoryMandateFail)
+    expect(resolved.messages.memoryOverwriteFail).toBe(DEFAULTS.messages.memoryOverwriteFail)
+    expect(resolved.messages.identicalLoopFail).toBe(DEFAULTS.messages.identicalLoopFail)
+    expect(resolved.messages.chainCapFail).toBe(DEFAULTS.messages.chainCapFail)
+    expect(resolved.messages.mcpSkillFail).toBe(DEFAULTS.messages.mcpSkillFail)
+    expect(resolved.messages.mcpSkillHints).toEqual(DEFAULTS.messages.mcpSkillHints)
+    expect(resolved.messages.descriptionHint).toBe(DEFAULTS.messages.descriptionHint)
+    expect(resolved.messages.problems).toEqual([])
+    expect(resolved.primer.text).toBe(DEFAULTS.primer.text) // byte-identical injected text
+    expect(resolved.primer.problems).toEqual([])
+  })
+
+  test("configured templates with exactly their known vars resolve verbatim", () => {
+    const { resolved, problems } = resolveOptions({
+      messages: {
+        generalBan: 'NO "{agent}" HERE.',
+        gateMissing: "NEEDED: {missing}.",
+        structureFail: "BAD {target}: missing {missing}, use {blocks}.",
+        identicalLoopFail: "LOOP x{n}.",
+        chainCapFail: "CHAIN {n}/{cap}.",
+        mcpSkillFail: 'MCP "{tool}" → "{skill}" ({hint}).',
+      },
+    })
+    expect(problems).toEqual([])
+    expect(resolved.messages.generalBan).toBe('NO "{agent}" HERE.')
+    expect(resolved.messages.gateMissing).toBe("NEEDED: {missing}.")
+    expect(resolved.messages.structureFail).toBe("BAD {target}: missing {missing}, use {blocks}.")
+    expect(resolved.messages.identicalLoopFail).toBe("LOOP x{n}.")
+    expect(resolved.messages.chainCapFail).toBe("CHAIN {n}/{cap}.")
+    expect(resolved.messages.mcpSkillFail).toBe('MCP "{tool}" → "{skill}" ({hint}).')
+    expect(resolved.messages.problems).toEqual([])
+  })
+
+  test("unknown {var} in a configured template → fallback to the default template + problem naming the path", () => {
+    const { resolved, problems } = resolveOptions({ messages: { gateMissing: "NEEDED: {missing} plus {tool}." } })
+    expect(
+      resolved.messages.problems.some(
+        (p) => p.includes("messages.gateMissing") && p.includes("{tool}") && p.includes("falling back"),
+      ),
+    ).toBeTrue()
+    expect(resolved.messages.gateMissing).toBe(DEFAULTS.messages.gateMissing) // presentation fallback
+    expect(problems.some((p) => p.includes("messages.gateMissing"))).toBeTrue() // surfaced too
+  })
+
+  test("unknown {var} in a zero-var template (complianceWarning) → fallback + problem (known: none)", () => {
+    const { resolved } = resolveOptions({ messages: { complianceWarning: " AUDIT: {n} violations." } })
+    expect(
+      resolved.messages.problems.some(
+        (p) => p.includes("messages.complianceWarning") && p.includes("{n}") && p.includes("(known: none)"),
+      ),
+    ).toBeTrue()
+    expect(resolved.messages.complianceWarning).toBe(DEFAULTS.messages.complianceWarning)
+  })
+
+  test("non-string or empty message values → fallback + problem", () => {
+    const a = resolveOptions({ messages: { generalBan: 42 } })
+    expect(
+      a.resolved.messages.problems.some((p) => p.startsWith("messages.generalBan must be a non-empty string")),
+    ).toBeTrue()
+    expect(a.resolved.messages.generalBan).toBe(DEFAULTS.messages.generalBan)
+    const b = resolveOptions({ messages: { backgroundBan: "" } })
+    expect(
+      b.resolved.messages.problems.some((p) => p.startsWith("messages.backgroundBan must be a non-empty string")),
+    ).toBeTrue()
+    expect(b.resolved.messages.backgroundBan).toBe(DEFAULTS.messages.backgroundBan)
+    // enforcement is untouched either way (presentation domain)
+    expect(a.resolved.dispatch.problems).toEqual([])
+    expect(b.resolved.dispatch.problems).toEqual([])
+  })
+
+  test("unknown keys inside messages/primer warn+ignore; valid keys resolve", () => {
+    const { resolved, problems } = resolveOptions({
+      messages: { gateMissing: "NEEDED: {missing}.", hintz: 1 },
+      primer: { mode: "default", textz: 1 },
+    })
+    expect(problems).toContain(`unknown option key "messages.hintz" ignored (warning)`)
+    expect(problems).toContain(`unknown option key "primer.textz" ignored (warning)`)
+    expect(resolved.messages.gateMissing).toBe("NEEDED: {missing}.")
+    expect(resolved.messages.problems).toEqual([])
+    expect(resolved.primer.problems).toEqual([])
+  })
+
+  test("messages group not a plain object → warn + ignore entirely (presentation: never breaks enforcement)", () => {
+    const { resolved, problems } = resolveOptions({ messages: 42 })
+    expect(problems.some((p) => p.includes(`options group "messages" must be a plain object`))).toBeTrue()
+    expect(resolved.messages.generalBan).toBe(DEFAULTS.messages.generalBan)
+    expect(resolved.messages.problems).toEqual([])
+    expect(resolved.dispatch.problems).toEqual([]) // enforcement unaffected
+  })
+
+  test("mcpSkillHints: custom record resolves (any skill keys); invalid shape → fallback + problem", () => {
+    const a = resolveOptions({ messages: { mcpSkillHints: { "acme-skill": "drive it gently", "adb-mcp": "tree first" } } })
+    expect(a.resolved.messages.mcpSkillHints).toEqual({ "acme-skill": "drive it gently", "adb-mcp": "tree first" })
+    expect(a.resolved.messages.problems).toEqual([])
+    const b = resolveOptions({ messages: { mcpSkillHints: { "adb-mcp": 42 } } })
+    expect(
+      b.resolved.messages.problems.some((p) => p.startsWith("messages.mcpSkillHints must be a plain object record")),
+    ).toBeTrue()
+    expect(b.resolved.messages.mcpSkillHints).toEqual(DEFAULTS.messages.mcpSkillHints)
+  })
+
+  test("primer.mode 'default' → DEFAULTS.primer.text verbatim (configured primer.text ignored)", () => {
+    const { resolved, problems } = resolveOptions({ primer: { mode: "default", text: "CUSTOM RULES" } })
+    expect(problems).toEqual([])
+    expect(resolved.primer.text).toBe(DEFAULTS.primer.text)
+  })
+
+  test("primer.mode 'replace' → configured primer.text verbatim (DEFAULTS ignored)", () => {
+    const a = resolveOptions({ primer: { mode: "replace", text: "MY RULES" } })
+    expect(a.problems).toEqual([])
+    expect(a.resolved.primer.text).toBe("MY RULES")
+  })
+
+  test("primer.mode 'append' → DEFAULTS.primer.text + configured text", () => {
+    const b = resolveOptions({ primer: { mode: "append", text: "ADDENDUM" } })
+    expect(b.problems).toEqual([])
+    expect(b.resolved.primer.text).toBe(DEFAULTS.primer.text + "\n\nADDENDUM")
+  })
+
+  test("primer.text WITHOUT mode → primer UNCHANGED (fix-round-1 ruling: a configured text alone must not change the injected primer until mode is explicitly replace/append)", () => {
+    const c = resolveOptions({ primer: { text: "TEXT ONLY" } }) // no mode → effective default "default": text inert
+    expect(c.problems).toEqual([])
+    expect(c.resolved.primer.text).toBe(DEFAULTS.primer.text)
+    expect(c.resolved.primer.problems).toEqual([]) // silent ignore: the explicit-default path behaves identically
+  })
+
+  test("primer.mode invalid → fallback to the default primer + problem naming primer.mode", () => {
+    const { resolved, problems } = resolveOptions({ primer: { mode: "prepend" } })
+    expect(
+      problems.some((p) => p.includes("primer.mode") && p.includes(`"prepend"`) && p.includes("falling back")),
+    ).toBeTrue()
+    expect(resolved.primer.text).toBe(DEFAULTS.primer.text)
+    expect(resolved.primer.problems.length).toBeGreaterThan(0)
+  })
+
+  test("primer.mode replace/append with missing or invalid text → fallback + problem", () => {
+    const a = resolveOptions({ primer: { mode: "replace" } }) // text missing
+    expect(
+      a.resolved.primer.problems.some((p) => p.includes("primer.text") && p.includes(`"replace"`) && p.includes("falling back")),
+    ).toBeTrue()
+    expect(a.resolved.primer.text).toBe(DEFAULTS.primer.text)
+    const b = resolveOptions({ primer: { mode: "append", text: 42 } })
+    expect(
+      b.resolved.primer.problems.some((p) => p.includes("primer.text must be a non-empty string")),
+    ).toBeTrue()
+    expect(b.resolved.primer.text).toBe(DEFAULTS.primer.text)
+    const c = resolveOptions({ primer: { mode: "append", text: "" } }) // empty string is not a text
+    expect(c.resolved.primer.problems.length).toBeGreaterThan(0)
+    expect(c.resolved.primer.text).toBe(DEFAULTS.primer.text)
+  })
+
+  test("primer group not a plain object → warn + ignore entirely", () => {
+    const { resolved, problems } = resolveOptions({ primer: "nope" })
+    expect(problems.some((p) => p.includes(`options group "primer" must be a plain object`))).toBeTrue()
+    expect(resolved.primer.text).toBe(DEFAULTS.primer.text)
+    expect(resolved.primer.problems).toEqual([])
+  })
+
+  test("resolved config is deep-frozen including messages/primer", () => {
+    const { resolved } = resolveOptions({})
+    expect(Object.isFrozen(resolved.messages)).toBeTrue()
+    expect(Object.isFrozen(resolved.messages.mcpSkillHints)).toBeTrue()
+    expect(Object.isFrozen(resolved.primer)).toBeTrue()
+    expect(() => {
+      ;(resolved.messages as { generalBan: string }).generalBan = "mutated"
+    }).toThrow()
+  })
+
+  test("non-object raw → presentation groups stay at DEFAULTS (warn class, NOT fail-closed)", () => {
+    const { resolved, problems } = resolveOptions("probe-not-an-object")
+    expect(problems.some((p) => p.includes("enforcement failing closed"))).toBeTrue()
+    expect(resolved.messages.generalBan).toBe(DEFAULTS.messages.generalBan) // defaults, not broken
+    expect(resolved.primer.text).toBe(DEFAULTS.primer.text)
+    expect(resolved.messages.problems).toEqual([]) // presentation groups are not guards
+    expect(resolved.primer.problems).toEqual([])
+    expect(resolved.dispatch.problems.length).toBeGreaterThan(0) // enforcement DID fail closed
+  })
+})
+
+describe("config Phase 3 — per-template deny rendering + primer modes (end-to-end)", () => {
+  test("generalBan + complianceWarning overrides render exactly: filled template + configured trailer", async () => {
+    await setupWith({
+      messages: {
+        generalBan: 'BANNED: "{agent}" is not allowed here.',
+        complianceWarning: " TRAILER-MARKER-P3: audited.",
+      },
+    })
+    const m = await denyMsg({ tool: "subagent", sessionID: "sess-p3-ban", input: { agent: "general", background: true } })
+    expect(m).toBe('BANNED: "general" is not allowed here. TRAILER-MARKER-P3: audited.')
+  })
+
+  test("gateMissing override renders with the real missing list, fully substituted", async () => {
+    await setupWith({ messages: { gateMissing: "NEEDED FIRST: {missing}. Go load them." } })
+    const m = await denyMsg({ tool: "shell", sessionID: "sess-p3-gate", input: {} })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("NEEDED FIRST: ")
+    expect(m!).toContain('skill "brainstorming"')
+    expect(m!).toContain("read of ~/.config/opencode/MEMORY.md")
+    expect(m!).not.toContain("{missing}")
+    expect(m!).not.toContain("Owner mandate") // default wording gone
+  })
+
+  test("structureFail override renders {target}/{missing}/{blocks}; the empty-prompt prefix stays hardcoded", async () => {
+    await setupWith({ messages: { structureFail: "BAD BRIEF for {target}: missing {missing}. Use {blocks}." } })
+    const sid = "sess-p3-struct"
+    complyAll(sid)
+    const m = await freshDispatch(sid, "code-reviewer", "Role: tester. Task: test things thoroughly.")
+    expect(m).not.toBeNull()
+    expect(m!).toContain("BAD BRIEF for subagent dispatch: missing Context; Constraints; Output format.")
+    expect(m!).toContain("Use Role / Task / Context / Constraints / Output format.")
+    expect(m!).not.toContain("{target}")
+    // the empty-prompt prefix is a code rule, not part of the template
+    const sidEmpty = "sess-p3-struct-empty"
+    complyAll(sidEmpty) // pass the gate so the structure check is reached
+    const mEmpty = await freshDispatch(sidEmpty, "code-reviewer", "")
+    expect(mEmpty).not.toBeNull()
+    expect(mEmpty!.startsWith("The dispatch prompt is missing or empty. BAD BRIEF for subagent dispatch:")).toBeTrue()
+  })
+
+  test("TRAILER RULE: the identical-loop deny stays trailer-less regardless of configuration (exact equality)", async () => {
+    await setupWith({
+      caps: { identicalMax: 2 },
+      messages: {
+        identicalLoopFail: "LOOP GUARD: identical dispatch sent {n} times. Stop.",
+        complianceWarning: " TRAILER-MARKER-P3: audited.",
+      },
+    })
+    const sid = "sess-p3-trailer"
+    complyAll(sid)
+    expect(await freshDispatch(sid, "code-reviewer", GOOD_PROMPT)).toBeNull() // count 1 < 2
+    const m = await freshDispatch(sid, "code-reviewer", GOOD_PROMPT) // count 2 → deny
+    expect(m).toBe("LOOP GUARD: identical dispatch sent 2 times. Stop.") // NO trailer, exactly
+    expect(m).not.toContain("TRAILER-MARKER-P3")
+  })
+
+  test("chainCapFail override renders with the configured trailer (contrast to the identical-loop rule)", async () => {
+    await setupWith({
+      caps: { chainMax: 1 },
+      messages: { chainCapFail: "CHAIN: {n} of cap {cap}. Stop.", complianceWarning: " TRAILER-MARKER-P3." },
+    })
+    const sid = "sess-p3-chain"
+    complyAll(sid)
+    expect(await continuation(sid, "step 1", "ses_child_p3chain")).toBeNull() // 1 > 1 false
+    const m = await continuation(sid, "step 2", "ses_child_p3chain")
+    expect(m).toBe("CHAIN: 2 of cap 1. Stop. TRAILER-MARKER-P3.") // template + configured trailer
+  })
+
+  test("mcpSkillFail + mcpSkillHints overrides render together; unknown skill keeps the generic hint", async () => {
+    await setupWith({
+      messages: {
+        mcpSkillFail: 'SERVER GATE: "{tool}" needs "{skill}" ({hint}).',
+        mcpSkillHints: { "adb-mcp": "open the accessibility tree first" },
+      },
+    })
+    const sid = "sess-p3-mcp"
+    complyAll(sid)
+    const m = await denyMsg({ tool: "adb_mcp_tap", sessionID: sid, input: {} })
+    expect(m).toBe(
+      'SERVER GATE: "adb_mcp_tap" needs "adb-mcp" (open the accessibility tree first).' +
+        DEFAULTS.messages.complianceWarning,
+    )
+    // a skill with no configured hint keeps the hardcoded generic hint
+    await setupWith({
+      messages: {
+        mcpSkillFail: 'SERVER GATE: "{tool}" needs "{skill}" ({hint}).',
+        mcpSkillHints: { "acme-skill": "unrelated" },
+      },
+    })
+    const sidGeneric = "sess-p3-mcp-generic"
+    complyAll(sidGeneric) // base-complete so the MCP-specific deny is reached
+    const m2 = await denyMsg({ tool: "adb_mcp_tap", sessionID: sidGeneric, input: {} })
+    expect(m2).toBe(
+      'SERVER GATE: "adb_mcp_tap" needs "adb-mcp" (load it before driving this server).' +
+        DEFAULTS.messages.complianceWarning,
+    )
+  })
+
+  test("backgroundBan + agentMissing overrides render on their own deny sites", async () => {
+    await setupWith({
+      messages: {
+        backgroundBan: "FOREGROUND DENIED. Use background:true.",
+        agentMissing: "NO AGENT GIVEN. Pick one.",
+      },
+    })
+    const mBg = await denyMsg({
+      tool: "subagent",
+      sessionID: "sess-p3-bgb",
+      input: { agent: "code-reviewer", background: false },
+    })
+    expect(mBg).toBe("FOREGROUND DENIED. Use background:true." + DEFAULTS.messages.complianceWarning)
+    const mAgent = await denyMsg({
+      tool: "subagent",
+      sessionID: "sess-p3-agent",
+      input: { background: true, prompt: GOOD_PROMPT },
+    })
+    expect(mAgent).toBe("NO AGENT GIVEN. Pick one." + DEFAULTS.messages.complianceWarning)
+  })
+
+  test("memoryMandateFail override renders on a structured brief without the mandate", async () => {
+    await setupWith({ messages: { memoryMandateFail: "NO MEMORY MANDATE. Add it." } })
+    const sid = "sess-p3-mandate"
+    complyAll(sid)
+    const m = await freshDispatch(sid, "code-reviewer", "Role: tester. Task: test. Context: c. Constraints: none. Output format: report.")
+    expect(m).toBe("NO MEMORY MANDATE. Add it." + DEFAULTS.messages.complianceWarning)
+  })
+
+  test("memoryOverwriteFail override renders on a guarded write (hermetic via _testStat)", async () => {
+    const defaultStat = _testStat.fn
+    _testStat.fn = () => true
+    try {
+      await setupWith({ messages: { memoryOverwriteFail: "MEMORY IS APPEND-ONLY." } })
+      const sid = "sess-p3-overwrite"
+      complyAll(sid)
+      const m = await denyMsg({ tool: "write", sessionID: sid, input: { path: "~/.config/opencode/MEMORY.md" } })
+      expect(m).toBe("MEMORY IS APPEND-ONLY." + DEFAULTS.messages.complianceWarning)
+    } finally {
+      _testStat.fn = defaultStat
+    }
+  })
+
+  test("descriptionHint override replaces the tool-description hint", async () => {
+    await setupWith({ messages: { descriptionHint: "\n\nSHORT POLICY HINT." } })
+    expect(transformed!.subagent.description).toBe("ORIG" + "\n\nSHORT POLICY HINT.")
+    await setupWith({}) // defaults → the default hint again
+    expect(transformed!.subagent.description).toBe("ORIG" + DEFAULTS.messages.descriptionHint)
+  })
+
+  test("configured template with an unknown {var} falls back at runtime: deny renders the DEFAULT template + problem recorded", async () => {
+    await setupWith({ messages: { gateMissing: "NEEDED: {missing} plus {tool}." } }) // {tool} unknown here
+    const m = await denyMsg({ tool: "shell", sessionID: "sess-p3-fallback", input: {} })
+    expect(m).not.toBeNull()
+    expect(m!).toContain("Owner mandate: this action requires") // the DEFAULT template rendered
+    expect(m!).not.toContain("NEEDED: {missing}")
+    const sys: any[] = []
+    await hooks["session.context"]({ system: sys, messages: [] })
+    expect(sys.length).toBe(2)
+    expect(sys[1]!.text).toContain("messages.gateMissing")
+    expect(sys[1]!.text).toContain("{tool}")
+  })
+
+  test("primer modes end-to-end: replace/append/text-without-mode-inert/byte-identical-default via session.context", async () => {
+    await setupWith({ primer: { mode: "replace", text: "MY RULES ONLY." } })
+    const sysReplace: any[] = []
+    await hooks["session.context"]({ system: sysReplace, messages: [] })
+    expect(sysReplace.length).toBe(1)
+    expect(sysReplace[0]!.text).toBe("MY RULES ONLY.")
+
+    await setupWith({ primer: { mode: "append", text: "ADDENDUM." } })
+    const sysAppend: any[] = []
+    await hooks["session.context"]({ system: sysAppend, messages: [] })
+    expect(sysAppend.length).toBe(1)
+    expect(sysAppend[0]!.text).toBe(DEFAULTS.primer.text + "\n\nADDENDUM.")
+
+    await setupWith({ primer: { text: "TEXT ONLY OVERRIDE." } }) // no mode → configured text inert (fix-round-1 ruling)
+    const sysTextOnly: any[] = []
+    await hooks["session.context"]({ system: sysTextOnly, messages: [] })
+    expect(sysTextOnly.length).toBe(1)
+    expect(sysTextOnly[0]!.text).toBe(DEFAULTS.primer.text) // primer UNCHANGED
+
+    await setupWith({}) // defaults → byte-identical PRIMER, no problems part
+    const sysDefault: any[] = []
+    await hooks["session.context"]({ system: sysDefault, messages: [] })
+    expect(sysDefault.length).toBe(1)
+    expect(sysDefault[0]!.text).toBe(DEFAULTS.primer.text)
+  })
+
+  test("primer invalid mode end-to-end: default primer injected + problems part naming primer.mode", async () => {
+    await setupWith({ primer: { mode: "prepend" } })
+    const sys: any[] = []
+    await hooks["session.context"]({ system: sys, messages: [] })
+    expect(sys.length).toBe(2)
+    expect(sys[0]!.text).toBe(DEFAULTS.primer.text) // fallback primer
+    expect(sys[1]!.text).toContain("dispatch-policy config problems:")
+    expect(sys[1]!.text).toContain("primer.mode")
   })
 })
